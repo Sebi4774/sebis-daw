@@ -119,6 +119,38 @@ function toggle(t, i, id, label) {
   const on = t.inst.values[P(id)] > 0.5;
   return h('button', { class: on ? 'on' : '', onclick: () => { t.inst.values[P(id)] = on ? 0 : 1; send('param', { index: i, param: P(id), value: on ? 0 : 1 }); markDirty(); renderSound(); } }, label);
 }
+function pick(t, i, id, labels, label) {   // a drop-down for long lists (keys, scales, chord types)
+  const cur = Math.round(t.inst.values[P(id)]);
+  return h('div', { class: 'slider' }, h('label', {}, label), h('select', { onchange: e => {
+    const k = +e.target.value; t.inst.values[P(id)] = k; send('param', { index: i, param: P(id), value: k }); markDirty(); renderSound();
+  } }, labels.map((l, k) => h('option', { value: k, selected: k === cur }, l))));
+}
+// CHORDS (same lists as engine/ChordEngine.h)
+const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const SCALES = ['Natural minor', 'Harmonic minor', 'Melodic minor', 'Phrygian', 'Dorian', 'Hungarian minor', 'Phrygian dominant', 'Locrian', 'Major', 'Lydian', 'Mixolydian'];
+const SHAPES = ['Major', 'Minor', 'Diminished', 'Augmented', 'Sus2', 'Sus4', 'Power (5)', 'Major 7', 'Minor 7', 'Dominant 7', 'Half-dim (m7b5)', 'Dim 7', 'Minor-major 7',
+  'Add9', 'Minor add9', 'Major 9', 'Minor 9', 'Dominant 9', 'Minor 11', 'Major 11', 'Dominant 11', 'Six', 'Minor 6', '7sus4', 'Minor 7 b9', 'Octave', 'Single note'];
+const RHYTHMS = ['Whole bar', 'Halves', 'Quarters', '8ths', 'Offbeats', '3-3-2', 'Dotted', 'Push', 'Stabs', 'Gallop', 'Half-time', 'Roll up'];
+function chordsPanel(t, i) {
+  const v = id => Math.round(t.inst.values[P(id)]);
+  const out = [h('h2', {}, 'Chords'), h('div', { class: 'row' }, toggle(t, i, 'crdOn', 'Chords on'), toggle(t, i, 'crdSmooth', 'Smooth voicing'))];
+  if (v('crdOn') < 1) { out.push(h('p', { class: 'note' }, 'Switch on and every key plays a full chord, in any engine.')); return out; }
+  out.push(choice(t, i, 'crdMode', ['Key', 'Same shape', 'Pads']), h('div', { style: 'height:6px' }),
+    pick(t, i, 'crdKey', NOTES, 'Key'), pick(t, i, 'crdScale', SCALES, 'Scale'),
+    v('crdMode') === 1 ? pick(t, i, 'crdShape', SHAPES, 'Shape') : pick(t, i, 'crdSize', ['Triads', '7ths', '9ths', '11ths', 'Sus2', 'Sus4', 'Power'], 'Size'),
+    pick(t, i, 'crdVoicing', ['Close', 'Drop 2', 'Drop 3', 'Spread', 'Cinematic'], 'Voicing'), pick(t, i, 'crdBass', ['Off', 'Root -1 oct', 'Root -2 oct'], 'Bass'),
+    knob(t, i, 'crdInv', 'Inversion'), knob(t, i, 'crdOct', 'Octave'),
+    choice(t, i, 'crdPlay', ['Hold', 'Arp', 'Rhythm']));
+  if (v('crdPlay') === 1) out.push(pick(t, i, 'crdArpRate', ['1/4', '1/8', '1/8 T', '1/16', '1/16 T', '1/32'], 'Rate'),
+    pick(t, i, 'crdArpPat', ['Up', 'Down', 'Up-down', 'Down-up', 'Random', 'Thumb', 'Converge'], 'Pattern'), knob(t, i, 'crdArpOct', 'Octaves'), knob(t, i, 'crdGate', 'Gate'), knob(t, i, 'crdSwing', 'Swing'));
+  else {
+    if (v('crdPlay') === 2) out.push(pick(t, i, 'crdRhythm', RHYTHMS, 'Rhythm'));
+    out.push(knob(t, i, 'crdStrum', 'Strum'), pick(t, i, 'crdDir', ['Up', 'Down', 'Up / down', 'Random', 'Bass first', 'Outside in'], 'Strum dir'));
+  }
+  out.push(knob(t, i, 'crdHuman', 'Human'));
+  if (v('crdMode') === 2) out.push(h('p', { class: 'note' }, 'Keys C to B play pads 1-12. Pick each pad\'s chord on the computer (CHORDS page); the phone plays them.'));
+  return out;
+}
 function presetPicker(t, i, kind) {
   const list = kind === 0 ? synthPresets : grainPresets;
   const sel = h('select', { onchange: e => {
@@ -203,6 +235,7 @@ export function renderSound() {
     panel.append(h('h2', {}, 'Chant (singing head)'), knob(t, i, 'chVowel', 'Vowel'), knob(t, i, 'chHead', 'Head size'), knob(t, i, 'chOpen', 'Mouth sweep'), knob(t, i, 'chSweep', 'Sweep time'),
       knob(t, i, 'chGlide', 'Glide'), knob(t, i, 'chVib', 'Vibrato'), knob(t, i, 'chChoir', 'Choir'), knob(t, i, 'chEcho', 'Echo'), knob(t, i, 'chGrit', 'Grit'));
   }
+  panel.append(...chordsPanel(t, i));
   panel.append(h('h2', {}, 'FX'), knob(t, i, 'dirt', 'DIRT'), knob(t, i, 'space', 'Space'), knob(t, i, 'delayMix', 'Delay'), knob(t, i, 'chorus', 'Chorus'), knob(t, i, 'tilt', 'Tone tilt'), knob(t, i, 'output', 'Output'));
 }
 

@@ -1,5 +1,5 @@
 // Sebi's DAW mobile - keeps the app on the phone so it opens without a connection.
-const VERSION = 'sebis-daw-1.0.0';
+const VERSION = 'sebis-daw-1.1.0';
 const FILES = ['./', 'index.html', 'style.css', 'manifest.webmanifest', 'dawcore.wasm', 'worklet.js',
   'js/app.js', 'js/ctx.js', 'js/dawcore.js', 'js/songfile.js', 'js/canvas.js', 'js/arrange.js', 'js/roll.js', 'js/play.js', 'js/mixer.js', 'js/songs.js',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
