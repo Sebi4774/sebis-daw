@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Sebi's DAW</title>
+<meta name="description" content="Sebi's DAW on the phone: the same engines and the same song files as the computer.">
+<meta name="theme-color" content="#0d0b14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Sebi's DAW">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <button id="btnSongs" class="songname" title="Songs"><span id="songName">Untitled</span><span class="dirty" id="dirtyDot"></span></button>
+    <div class="transport">
+      <button id="btnRec" class="round rec" title="Record notes">●</button>
+      <button id="btnPlay" class="round play" title="Play">▶</button>
+      <button id="btnStop" class="round" title="Stop">■</button>
+    </div>
+    <div class="topright">
+      <div id="posText" class="pos">1.1</div>
+      <button id="btnBpm" class="chip" title="Tempo"><span id="bpmText">140</span> bpm</button>
+    </div>
+  </header>
+  <div id="toolbar"></div>
+  <main id="views">
+    <section id="v-arrange" class="view"><canvas id="arrCanvas"></canvas></section>
+    <section id="v-edit" class="view"><canvas id="rollCanvas"></canvas><div id="audioEdit" class="panel hidden"></div></section>
+    <section id="v-play" class="view"><div id="playArea"></div><div id="soundPanel" class="panel"></div></section>
+    <section id="v-mix" class="view"><div id="mixer" class="panel"></div></section>
+    <section id="v-songs" class="view"><div id="songs" class="panel"></div></section>
+  </main>
+  <nav id="tabs">
+    <button data-view="arrange" class="on"><i>▤</i>Arrange</button>
+    <button data-view="edit"><i>♪</i>Edit</button>
+    <button data-view="play"><i>▦</i>Play</button>
+    <button data-view="mix"><i>☰</i>Mixer</button>
+    <button data-view="songs"><i>⇅</i>Songs</button>
+  </nav>
+</div>
+<div id="sheet" class="sheet hidden"><div class="sheet-body" id="sheetBody"></div></div>
+<div id="toast" class="toast hidden"></div>
+<div id="startGate" class="gate"><div><h1>Sebi's DAW</h1><p>Tap to start the sound engine.</p><button id="btnStart" class="big">Start</button></div></div>
+<input type="file" id="fileOpen" multiple hidden>
+<input type="file" id="fileAudio" multiple hidden>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
