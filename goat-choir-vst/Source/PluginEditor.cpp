@@ -4,7 +4,7 @@ using namespace juce;
 
 namespace gc {
 namespace {
-const int W = 1060, H = 700;
+const int W = 1060, H = 812;
 Font bold(float s) { return Font(s, Font::bold); }
 Colour rgb(uint32 c) { return Colour(0xff000000 | c); }
 float hash(int a, int b) { uint32 h = ((uint32)a * 73856093u) ^ ((uint32)b * 19349663u); h ^= h >> 13; h *= 0x5bd1e995; h ^= h >> 15; return (h & 0xffff) / 65535.0f; }
@@ -86,6 +86,19 @@ void LnF::drawLinearSlider(Graphics& g, int x, int y, int w, int h, float pos, f
     g.fillRoundedRectangle((float)x, cy - 3, pos - x, 6, 3);
     g.setColour(col::gold);
     g.fillEllipse(pos - 7, cy - 7, 14, 14);
+}
+
+void LnF::drawRotarySlider(Graphics& g, int x, int y, int w, int h, float pos, float a0, float a1, Slider&) {
+    const auto r = Rectangle<float>((float)x, (float)y, (float)w, (float)h).reduced(4);
+    const float rad = jmin(r.getWidth(), r.getHeight()) / 2, cx = r.getCentreX(), cy = r.getCentreY();
+    Path track, val;
+    track.addCentredArc(cx, cy, rad - 3, rad - 3, 0, a0, a1, true);
+    val.addCentredArc(cx, cy, rad - 3, rad - 3, 0, a0, a0 + (a1 - a0) * pos, true);
+    g.setColour(col::panel2); g.strokePath(track, PathStrokeType(5, PathStrokeType::curved, PathStrokeType::rounded));
+    g.setColour(col::gold); g.strokePath(val, PathStrokeType(5, PathStrokeType::curved, PathStrokeType::rounded));
+    const float a = a0 + (a1 - a0) * pos - MathConstants<float>::halfPi;
+    g.setColour(col::ink);
+    g.drawLine(cx, cy, cx + std::cos(a) * (rad - 10), cy + std::sin(a) * (rad - 10), 2.5f);
 }
 
 // ---------------- stage ----------------
@@ -427,6 +440,96 @@ void Chips::mouseDown(const MouseEvent& e) {
     }
 }
 
+// ---------------- motion ----------------
+Point<float> MotionCurve::toUnit(Point<float> p) const {
+    const float pad = 9;
+    return {jlimit(0.0f, 1.0f, (p.x - pad) / (getWidth() - 2 * pad)), jlimit(0.0f, 1.0f, 1 - (p.y - pad) / (getHeight() - 2 * pad))};
+}
+Point<float> MotionCurve::toPx(float x, float y) const {
+    const float pad = 9;
+    return {pad + x * (getWidth() - 2 * pad), pad + (1 - y) * (getHeight() - 2 * pad)};
+}
+int MotionCurve::nearPoint(Point<float> p) const {
+    int best = -1; float bd = 14;
+    for (size_t i = 0; i < proc.motionPts.size(); ++i) {
+        const float d = toPx(proc.motionPts[i].first, proc.motionPts[i].second).getDistanceFrom(p);
+        if (d < bd) { bd = d; best = (int)i; }
+    }
+    return best;
+}
+void MotionCurve::paint(Graphics& g) {
+    auto r = getLocalBounds().toFloat();
+    const bool on = proc.apvts.getRawParameterValue("motionOn")->load() > 0.5f;
+    g.setColour(col::panel); g.fillRoundedRectangle(r, 9);
+    g.setColour(col::panel2);
+    for (int k = 1; k < 4; ++k) { const float x = toPx(k / 4.0f, 0).x; g.drawVerticalLine((int)x, 6, r.getBottom() - 6); }
+    auto m = proc.motionNow();
+    Path line, fill;
+    for (int i = 0; i <= 160; ++i) {
+        const float x = i / 160.0f; const auto pt = toPx(x, (float)m.at(jmin(x, 0.99999f)));
+        if (i == 0) line.startNewSubPath(pt); else line.lineTo(pt);
+    }
+    fill = line;
+    fill.lineTo(toPx(1, 0)); fill.lineTo(toPx(0, 0)); fill.closeSubPath();
+    const Colour c = on ? col::gold : col::gold.withAlpha(0.45f);
+    g.setColour(c.withAlpha(on ? 0.14f : 0.06f)); g.fillPath(fill);
+    g.setColour(c); g.strokePath(line, PathStrokeType(2.2f));
+    for (size_t i = 0; i < proc.motionPts.size(); ++i) {
+        const auto pt = toPx(proc.motionPts[i].first, proc.motionPts[i].second);
+        const float rr = (int)i == drag ? 6.0f : 4.5f;
+        g.setColour(col::ink); g.fillEllipse(pt.x - rr, pt.y - rr, rr * 2, rr * 2);
+    }
+    const float ph = proc.motionPhase.load();
+    if (on && ph >= 0) { g.setColour(Colours::white.withAlpha(0.5f)); g.drawVerticalLine((int)toPx(ph, 0).x, 4, r.getBottom() - 4); }
+}
+void MotionCurve::mouseDown(const MouseEvent& e) {
+    auto& P = proc.motionPts;
+    int i = nearPoint(e.position);
+    if (i < 0 && (int)P.size() < goat::Motion::kMaxPts) {
+        const auto u = toUnit(e.position);
+        i = (int)P.size() - 1;
+        for (size_t k = 1; k < P.size(); ++k) if (P[k].first > u.x) { i = (int)k; break; }
+        if (i <= 0) i = (int)P.size() - 1;
+        P.insert(P.begin() + i, {u.x, u.y});
+        proc.motionChanged();
+        if (onEdit) onEdit();
+    }
+    drag = i;
+    repaint();
+}
+void MotionCurve::mouseDrag(const MouseEvent& e) {
+    auto& P = proc.motionPts;
+    if (drag < 0 || drag >= (int)P.size()) return;
+    const auto u = toUnit(e.position);
+    const int last = (int)P.size() - 1;
+    if (drag > 0 && drag < last) P[(size_t)drag].first = jlimit(P[(size_t)drag - 1].first + 0.005f, P[(size_t)drag + 1].first - 0.005f, u.x);
+    P[(size_t)drag].second = u.y;
+    proc.motionChanged();
+    if (onEdit) onEdit();
+}
+void MotionCurve::mouseDoubleClick(const MouseEvent& e) {
+    const int i = nearPoint(e.position);
+    if (i > 0 && i < (int)proc.motionPts.size() - 1) { proc.motionPts.erase(proc.motionPts.begin() + i); proc.motionChanged(); if (onEdit) onEdit(); }
+}
+
+VBar::VBar(GoatChoirProcessor& p, const char* paramId, const String& t) : title(t) {
+    att = std::make_unique<ParameterAttachment>(*p.apvts.getParameter(paramId), [this](float v) { value = v; repaint(); });
+    att->sendInitialUpdate();
+}
+void VBar::set(const MouseEvent& e) {
+    const auto r = getLocalBounds().toFloat().withTrimmedTop(16);
+    att->setValueAsPartOfGesture(jlimit(0.0f, 1.0f, std::round((1 - (e.position.y - r.getY()) / r.getHeight()) * 100) / 100));
+}
+void VBar::paint(Graphics& g) {
+    g.setColour(col::dim); g.setFont(bold(11));
+    g.drawText(title.toUpperCase(), 0, 0, getWidth(), 14, Justification::centred);
+    auto r = getLocalBounds().toFloat().withTrimmedTop(16);
+    g.setColour(col::panel2); g.fillRoundedRectangle(r, 8);
+    g.setColour(col::gold.withAlpha(0.8f)); g.fillRoundedRectangle(r.withTop(r.getBottom() - r.getHeight() * value), 8);
+    g.setColour(col::ink); g.setFont(bold(13));
+    g.drawText(String(std::lround(value * 100)) + "%", r, Justification::centred);
+}
+
 // ---------------- drag to FL ----------------
 void DragHandle::paint(Graphics& g) {
     auto r = getLocalBounds().toFloat().reduced(1);
@@ -459,6 +562,8 @@ void DragHandle::mouseUp(const MouseEvent& e) {
 GoatChoirEditor::GoatChoirEditor(GoatChoirProcessor& p)
     : AudioProcessorEditor(&p), proc(p), stage(p),
       sing(p, "sing", "Sing"), style(p, "style", "Style"), vowel(p, "vowel", "Vowel"), chop(p, "chop", "Chop"),
+      motionSync(p, "motionSync", "Sync"), motionLen(p, "motionLen", "Length"),
+      curve(p), depthBar(p, "motionDepth", "Depth"), chanceBar(p, "motionChance", "Chance"),
       chips(p), drag(p) {
     setLookAndFeel(&lnf);
     addAndMakeVisible(stage);
@@ -483,7 +588,44 @@ GoatChoirEditor::GoatChoirEditor(GoatChoirProcessor& p)
     roomAtt = std::make_unique<AudioProcessorValueTreeState::SliderAttachment>(p.apvts, "room", room);
     vol.setTooltip("Volume"); room.setTooltip("Room: how much mountain echo");
 
-    for (auto* c : {&sing, &style, &vowel, &chop}) addAndMakeVisible(*c);
+    for (auto* c : {&sing, &style, &vowel, &chop, &motionSync, &motionLen}) addAndMakeVisible(*c);
+
+    // Strum knob: the gap between goats, low to high. Turning it up from Block switches to Strum
+    strumKnob.setSliderStyle(Slider::RotaryHorizontalVerticalDrag);
+    strumKnob.setTextBoxStyle(Slider::TextBoxBelow, true, 60, 16);
+    strumKnob.setColour(Slider::textBoxBackgroundColourId, Colours::transparentBlack);
+    strumKnob.setColour(Slider::textBoxOutlineColourId, Colours::transparentBlack);
+    strumKnob.setDoubleClickReturnValue(true, 0.45);
+    strumKnob.setTooltip("Strum: how far apart the goats come in, low to high");
+    addAndMakeVisible(strumKnob);
+    strumAtt = std::make_unique<AudioProcessorValueTreeState::SliderAttachment>(p.apvts, "strum", strumKnob);
+    strumKnob.onValueChange = [this] {
+        if (strumKnob.isMouseButtonDown() && strumKnob.getValue() > 0 && proc.choice("style") == goat::Block)
+            if (auto* st = proc.apvts.getParameter("style")) { st->beginChangeGesture(); st->setValueNotifyingHost(st->convertTo0to1((float)goat::Strum)); st->endChangeGesture(); }
+    };
+
+    // Motion: a drawn curve rides the choir's level, locked to FL's beat
+    motionOnBtn.setClickingTogglesState(true);
+    motionOnBtn.setTooltip("Motion: the choir's level follows the curve, in time with the song");
+    motionOnAtt = std::make_unique<AudioProcessorValueTreeState::ButtonAttachment>(p.apvts, "motionOn", motionOnBtn);
+    addAndMakeVisible(motionOnBtn);
+    for (int i = 0; i < 10; ++i) {
+        auto* b = shapeBtns.add(new TextButton(goat::kMotionShapes[i]));
+        b->getProperties().set("small", true);
+        b->onClick = [this, i] {
+            proc.motionPts = goat::motionShape(i); proc.motionShape = i; proc.motionChanged();
+            if (!motionOnBtn.getToggleState()) motionOnBtn.setToggleState(true, sendNotification);
+            refreshShapes();
+        };
+        addAndMakeVisible(b);
+    }
+    curve.onEdit = [this] {
+        proc.motionShape = -1;
+        if (!motionOnBtn.getToggleState()) motionOnBtn.setToggleState(true, sendNotification);
+        refreshShapes();
+    };
+    for (Component* c : std::initializer_list<Component*>{&curve, &depthBar, &chanceBar}) addAndMakeVisible(*c);
+    refreshShapes();
 
     goatsAtt = std::make_unique<ParameterAttachment>(*p.apvts.getParameter("goats"), [this](float v) { goats = (int)std::lround(v); repaint(); refreshCard(); });
     goatsAtt->sendInitialUpdate();
@@ -556,6 +698,12 @@ void GoatChoirEditor::refreshLabels() {
     for (int i = 0; i < goat::kStrips; ++i) { strips[(size_t)i]->lab = stage.lab[(size_t)i]; strips[(size_t)i]->chord = c[(size_t)i]; strips[(size_t)i]->repaint(); }
 }
 
+void GoatChoirEditor::refreshShapes() {
+    for (int i = 0; i < shapeBtns.size(); ++i) shapeBtns[i]->setToggleState(i == proc.motionShape, dontSendNotification);
+    seenMotion = proc.motionVersion;
+    curve.repaint();
+}
+
 void GoatChoirEditor::refreshCard() {
     int sel = proc.selected.load();
     if (sel >= goats) { sel = goats - 1; proc.selected = sel; }
@@ -587,6 +735,7 @@ void GoatChoirEditor::timerCallback() {
         }
     }
     if (proc.selected.load() != seenSel) refreshCard();
+    if (proc.motionVersion != seenMotion) refreshShapes();
     if (playBtn.getToggleState() != proc.isProgPlaying()) playBtn.setToggleState(proc.isProgPlaying(), dontSendNotification);
     if (recBtn.getToggleState() != proc.recording) recBtn.setToggleState(proc.recording, dontSendNotification);
     if (sayUntil && Time::getMillisecondCounter() > sayUntil) { sayUntil = 0; status.setText({}, dontSendNotification); }
@@ -622,11 +771,15 @@ void GoatChoirEditor::paint(Graphics& g) {
     g.drawText("ROOM", 190, 552, 60, 14, Justification::left);
     g.drawText("MOUSE", 400, 552, 60, 14, Justification::left);
     g.drawText("SELECTED GOAT", 562, 552, 120, 14, Justification::left);
-    g.drawText("PROGRESSION", 14, 608, 120, 14, Justification::left);
+    g.drawText("STRUM", 14, 612, 70, 14, Justification::left);
+    g.drawText("MOTION", 94, 612, 70, 14, Justification::left);
+    g.drawText("SHAPES", 342, 612, 70, 14, Justification::left);
+    g.drawText("PROGRESSION", 14, 720, 120, 14, Justification::left);
     g.setColour(gc::col::ink); g.setFont(gc::bold(16));
     g.drawText(String(goats), 42, 568, 68, 28, Justification::centred);
     g.setColour(gc::col::panel);
-    g.fillRect(0, 600, getWidth(), 1);
+    g.fillRect(0, 604, getWidth(), 1);
+    g.fillRect(0, 712, getWidth(), 1);
 }
 
 void GoatChoirEditor::resized() {
@@ -658,14 +811,23 @@ void GoatChoirEditor::resized() {
     muteBtn.setBounds(894, 568, 70, 28);
     scarfBtn.setBounds(970, 568, 78, 28);
 
-    recBtn.setBounds(120, 606, 64, 26);
-    playBtn.setBounds(190, 606, 64, 26);
-    undoBtn.setBounds(260, 606, 64, 26);
-    clearBtn.setBounds(330, 606, 64, 26);
-    status.setBounds(404, 606, 420, 26);
-    chipsView.setBounds(10, 640, 820, 54);
+    strumKnob.setBounds(10, 626, 70, 80);
+    motionOnBtn.setBounds(94, 630, 74, 26);
+    motionSync.setBounds(176, 614, 150, 42);
+    motionLen.setBounds(94, 664, 232, 42);
+    for (int i = 0; i < shapeBtns.size(); ++i) shapeBtns[i]->setBounds(340 + (i % 5) * 55, 630 + (i / 5) * 32, 53, 28);
+    curve.setBounds(620, 612, 296, 94);
+    depthBar.setBounds(926, 612, 56, 94);
+    chanceBar.setBounds(990, 612, 58, 94);
+
+    recBtn.setBounds(120, 718, 64, 26);
+    playBtn.setBounds(190, 718, 64, 26);
+    undoBtn.setBounds(260, 718, 64, 26);
+    clearBtn.setBounds(330, 718, 64, 26);
+    status.setBounds(404, 718, 420, 26);
+    chipsView.setBounds(10, 752, 820, 54);
     chips.refresh();
-    saveBtn.setBounds(842, 606, 206, 28);
-    drag.setBounds(842, 642, 206, 48);
+    saveBtn.setBounds(842, 718, 206, 28);
+    drag.setBounds(842, 754, 206, 48);
 }
 

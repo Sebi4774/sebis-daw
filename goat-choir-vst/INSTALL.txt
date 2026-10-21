@@ -25,6 +25,15 @@ PLAY IT
   * Sing: Choir (full voicing), Unison, Solo (the selected goat).
     Style: Block, Strum, Arp (8th notes on the song's tempo).
     Vowel: OO OH AH EH EE Mm.  Chop: a gate locked to the song's tempo.
+  * Strum knob: how far apart the goats come in, low to high. Turning it
+    up from Block switches Style to Strum. Double-click resets it to 45%.
+  * Motion: the choir's level follows a curve you draw, in time with the
+    song. Pick a shape (Flat, Swell, Fade, Wave, Rise, Breathe, Pump, Gate,
+    Stutter, Steps) or drag the points; click to add one, double-click to
+    remove one. Global follows the song's bars, Retrig restarts on every
+    chord. Length is 1/4 bar to 2 bars. Depth sets how deep it goes;
+    Chance skips some cycles at random (the same way every time).
+    Saved MIDI carries Motion as CC11 (expression).
   * Click a goat to select it: change its voice, mute it, change its scarf.
 
 RECORD A PROGRESSION AND PUT IT IN FL

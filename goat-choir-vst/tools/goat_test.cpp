@@ -22,7 +22,8 @@ static void setParam(GoatChoirProcessor& p, const char* id, float v) {
 struct Ev { double beat; MidiMessage m; };
 struct RenderResult { float peak = 0, rms = 0; int midiOn = 0, midiOff = 0; };
 
-static RenderResult render(GoatChoirProcessor& p, FakeHost& host, double sr, double beats, std::vector<Ev> evs, const File& wav, double tailSec = 1.5) {
+static RenderResult render(GoatChoirProcessor& p, FakeHost& host, double sr, double beats, std::vector<Ev> evs, const File& wav, double tailSec = 1.5,
+                           AudioBuffer<float>* keep = nullptr) {
     const int block = 512;
     const int total = (int)(beats * 60 / host.bpm * sr + tailSec * sr);
     AudioBuffer<float> out(2, total), buf(2, block);
@@ -45,6 +46,7 @@ static RenderResult render(GoatChoirProcessor& p, FakeHost& host, double sr, dou
     }
     for (int c = 0; c < 2; ++c) for (int i = 0; i < total; ++i) { const float v = out.getSample(c, i); r.peak = jmax(r.peak, std::abs(v)); sum += v * v; }
     r.rms = (float)std::sqrt(sum / (2.0 * total));
+    if (keep) keep->makeCopyOf(out);
     wav.deleteFile();
     if (auto os = std::unique_ptr<FileOutputStream>(wav.createOutputStream())) {
         WavAudioFormat fmt;
@@ -113,6 +115,27 @@ int main(int argc, char** argv) {
         check(ons >= 12, String(ons) + " notes in the file");
         check(std::abs(end - 16 * 96) < 1, "the file is 4 bars long");
     }
+
+    std::cout << "Motion (Gate, 1 bar, Global) and its CC11 in the export:\n";
+    p.motionPts = goat::motionShape(7); p.motionShape = 7; p.motionChanged();
+    setParam(p, "motionOn", 1);
+    {
+        AudioBuffer<float> buf;
+        host.playing = true; setParam(p, "room", 0);
+        render(p, host, sr, 4, strips({0}, 4), dir.getChildFile("06_motion_gate.wav"), 0.2, &buf);
+        const int bar = (int)(4 * 60 / host.bpm * sr);
+        const float a = buf.getRMSLevel(0, bar / 8, bar / 4), b = buf.getRMSLevel(0, bar * 5 / 8, bar / 4);
+        std::cout << "  first half " << Decibels::gainToDecibels(a) << " dB, second half " << Decibels::gainToDecibels(b) << " dB\n";
+        check(a > 0.02f && b < a * 0.25f, "Gate shape silences the second half of the bar");
+        const auto mid2 = dir.getChildFile("motion.mid");
+        check(p.writeMidi(mid2), "export with Motion on");
+        FileInputStream in(mid2); MidiFile mf; mf.readFrom(in);
+        int cc = 0, lo = 127;
+        for (int t = 0; t < mf.getNumTracks(); ++t) for (auto* e : *mf.getTrack(t)) if (e->message.isController() && e->message.getControllerNumber() == 11) { ++cc; lo = jmin(lo, e->message.getControllerValue()); }
+        check(cc >= 8 && lo == 0, "the file carries the Gate as CC11 (" + String(cc) + " events, low " + String(lo) + ")");
+    }
+    setParam(p, "motionOn", 0); setParam(p, "room", 0.45f);
+    render(p, host, sr, 2, {}, dir.getChildFile("_flush.wav"), 0.5);
 
     std::cout << "Sing my notes (held Cm9 voicing), Unison then Choir:\n";
     setParam(p, "keys", 1);

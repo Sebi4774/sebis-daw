@@ -70,6 +70,14 @@ public:
     void progChanged();   // call after editing prog
     void labels(std::array<goat::ChordLabel, goat::kStrips>& out) const;
 
+    // Motion curve (message thread); the audio thread gets a copy
+    std::vector<std::pair<float, float>> motionPts = goat::motionShape(5);
+    int motionShape = 5;   // preset index, -1 = custom drawing
+    int motionVersion = 0;
+    void motionChanged();
+    goat::Motion motionNow() const;   // the curve + its parameters, for export and drawing
+    std::atomic<float> motionPhase{-1.0f};
+
     // MIDI export: the progression as the choir sings it in the current style
     juce::String fileBase() const;
     bool writeMidi(const juce::File& f) const;
@@ -92,6 +100,10 @@ private:
     std::array<goat::ProgItem, goat::kMaxProg> progShared;
     int progSharedN = 0;
     std::atomic<bool> progDirty{false};
+    juce::SpinLock motionLock;
+    std::array<std::pair<float, float>, goat::Motion::kMaxPts> motionShared{};
+    int motionSharedN = 0;
+    std::atomic<bool> motionDirty{true};
     bool progPlayWanted = false;
     int recLastQ = 0; bool recTimed = false;
 

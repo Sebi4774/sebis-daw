@@ -362,6 +362,64 @@ struct NoteEvt { int offset, note; bool on; };
 struct TriggerEvt { int chord; Plan plan; double beat; bool hostPlaying; };
 struct ProgItem { int chord = -1; Plan notes = emptyPlan(); double bars = 1; };
 
+// ---------------- Motion: a drawn curve rides the choir's level, locked to the beat ----------------
+// points are (x, y) in 0..1 over one cycle; between points the curve eases (cosine), like the app
+inline const char* const kMotionShapes[10] = {"Flat", "Swell", "Fade", "Wave", "Rise", "Breathe", "Pump", "Gate", "Stutter", "Steps"};
+inline std::vector<std::pair<float, float>> motionShape(int i) {
+    switch (i) {
+        case 0: return {{0, 1}, {1, 1}};
+        case 1: return {{0, 0}, {1, 1}};
+        case 2: return {{0, 1}, {1, 0}};
+        case 3: return {{0, .5f}, {.25f, 1}, {.75f, 0}, {1, .5f}};
+        case 4: return {{0, 0}, {.5f, 1}, {1, 0}};
+        case 6: return {{0, 0}, {.38f, 1}, {1, 1}};
+        case 7: return {{0, 1}, {.48f, 1}, {.5f, 0}, {.98f, 0}, {1, 1}};
+        case 8: {
+            std::vector<std::pair<float, float>> v;
+            for (int k = 0; k < 4; ++k) { const float b = k / 4.0f; v.insert(v.end(), {{b, 1}, {b + .11f, 1}, {b + .125f, .05f}, {b + .235f, .05f}}); }
+            v.push_back({1, 1});
+            return v;
+        }
+        case 9: return {{0, 1}, {.24f, 1}, {.25f, .66f}, {.49f, .66f}, {.5f, .33f}, {.74f, .33f}, {.75f, .1f}, {1, .1f}};
+        default: return {{0, .05f}, {.22f, 1}, {.45f, 1}, {.72f, .05f}, {1, .05f}};   // Breathe
+    }
+}
+struct Motion {
+    static constexpr int kMaxPts = 32;
+    enum { Global, Retrigger };
+    bool on = false; int sync = Global; double lenBars = 1, depth = 1, chance = 1;
+    std::array<std::pair<float, float>, kMaxPts> pts{}; int n = 0;
+    Motion() { setPoints(motionShape(5)); }
+    void setPoints(const std::vector<std::pair<float, float>>& v) {
+        n = (int)std::min<size_t>(v.size(), kMaxPts);
+        for (int i = 0; i < n; ++i) pts[(size_t)i] = v[(size_t)i];
+    }
+    double at(double x) const {
+        x -= std::floor(x);
+        for (int i = 1; i < n; ++i)
+            if (x <= pts[(size_t)i].first) {
+                const auto [x0, y0] = pts[(size_t)i - 1];
+                const auto [x1, y1] = pts[(size_t)i];
+                const double u = x1 > x0 ? (x - x0) / (x1 - x0) : 1;
+                return y0 + (y1 - y0) * (1 - std::cos(kPi * u)) / 2;
+            }
+        return n ? pts[(size_t)n - 1].second : 1;
+    }
+    // a fixed coin per cycle, so Chance gives the same pattern every time (same hash as the app)
+    static double coin(long long seed) {
+        uint32_t h = (uint32_t)seed * 2654435761u; h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
+        return h / 4294967296.0;
+    }
+    // gBeats = beats since the song start, lBeats = beats since chord k started
+    double gain(double gBeats, double lBeats, int k) const {
+        if (!on || n < 2) return 1;
+        const double cyc = lenBars * 4, t = sync == Global ? gBeats : lBeats;
+        const long long c = (long long)std::floor(t / cyc + 1e-9), seed = sync == Global ? c : k * 997LL + c;
+        if (chance < 1 && coin(seed + 1) >= chance) return 1;
+        return 1 - depth * (1 - at(t / cyc));
+    }
+};
+
 // The whole choir: six goats, the chord strips, strum/arp/chop timing, the progression player and MIDI out.
 // Everything that follows the beat reads beatPos, which the plugin locks to the host's song position.
 class ChoirEngine {
@@ -370,6 +428,9 @@ public:
     int root = 3, scale = Minor, ext = 4, mode = Choir, style = Block, vowel = 2, chop = 0, count = 4, sel = 0;
     double bpm = 140, beatPos = 0;
     bool hostPlaying = false;
+    double strum = 0.45;   // Strum knob: gap between goats, low to high = strum * a beat * 0.3
+    Motion motion;
+    double motionPhase = -1;   // where the Motion playhead is in its cycle (for the editor), -1 = off
     std::array<SingerInfo, kMaxGoats> singers;
     std::array<Chord, kStrips> chords;
     // results, read by the owner after each block
@@ -389,6 +450,7 @@ public:
         for (int k = 0; k < kMaxGoats; ++k) voices[k].prepare(sr, 0x9E3779B9u * (k + 1), kCast[k].pan, 6.4 + 1.2 * ((k * 37) % 10) / 10.0);
         chopLp.lowpass(70, 1.122, sr);
         chopC = 1 - std::exp(-1 / (0.03 * sr));
+        motionC = 1 - std::exp(-1 / (0.006 * sr));
         sounding.fill(-1); noteRef.fill(0); pend.fill({-1, 0});
         arpOn = false; current = -1;
     }
@@ -430,11 +492,12 @@ public:
         } else {
             for (int k = 0; k < kMaxGoats; ++k) if (plan[k] < 0) quietGoat(k);
             for (int j = 0; j < n; ++j) {
-                if (style == Strum && allowStrum && j > 0) pend[seq[j].first] = {seq[j].second, (int)(j * 0.06 * sr)};
+                if (style == Strum && allowStrum && j > 0 && strum > 0) pend[seq[j].first] = {seq[j].second, std::max(1, (int)(j * strum * 0.3 * 60.0 / bpm * sr))};
                 else startGoat(seq[j].first, seq[j].second);
             }
         }
         current = chordIdx;
+        chordStartBeat = beatPos; ++chordCount;   // Motion's Retrigger restarts here
         if (record && nTrig < (int)trig.size()) trig[nTrig++] = {chordIdx, plan, beatPos, hostPlaying};
     }
     void stopAll() {
@@ -469,7 +532,13 @@ public:
             double ph = beatPos * mul; ph -= std::floor(ph);
             const double lp = chopLp.process(ph < 0.5 ? 1.0 : -1.0);
             chopBase += (baseT - chopBase) * chopC; chopAmt += (amtT - chopAmt) * chopC; chopVib += (vibT - chopVib) * chopC;
-            const double gate = (chopBase + chopAmt * lp) * 0.5 * 0.9, cents = chopVib * lp;
+            if ((i & 15) == 0) {
+                motionT = motion.gain(beatPos, beatPos - chordStartBeat, chordCount);
+                const double t = motion.sync == Motion::Global ? beatPos : beatPos - chordStartBeat, cyc = motion.lenBars * 4;
+                motionPhase = motion.on ? t / cyc - std::floor(t / cyc) : -1;
+            }
+            motionG += (motionT - motionG) * motionC;
+            const double gate = (chopBase + chopAmt * lp) * 0.5 * 0.9 * motionG, cents = chopVib * lp;
             double l = 0, r = 0;
             for (auto& v : voices) {
                 if (v.idle()) continue;
@@ -495,6 +564,7 @@ private:
     bool arpOn = false; long long arpBase = 0, arpStep = -1;
     Biquad chopLp; double chopC = 0, chopBase = 1, chopAmt = 0, chopVib = 0;
     int curOff = 0, builtKey = -1;
+    double chordStartBeat = 0, motionG = 1, motionT = 1, motionC = 0.01; int chordCount = 0;
 
     void noteOn(int n) { if (noteRef[n]++ == 0) midiOut.push_back({curOff, n, true}); }
     void noteOff(int n) { if (noteRef[n] > 0 && --noteRef[n] == 0) midiOut.push_back({curOff, n, false}); }
@@ -523,7 +593,9 @@ private:
 
 // ---------------- MIDI file: exactly what the choir sang, one track, 96 ticks per beat ----------------
 struct ExportItem { Plan notes; double bars; };
-inline std::vector<uint8_t> midiFile(const std::vector<ExportItem>& items, double tempo, int style, const std::string& owner) {
+// strum = the Strum knob; motion (if on) is written as CC11 (expression) every 1/8 beat so the DAW plays the same swell
+inline std::vector<uint8_t> midiFile(const std::vector<ExportItem>& items, double tempo, int style, double strumAmt, const Motion* motion,
+                                     const std::string& owner) {
     const int PPQ = 96;
     std::vector<uint8_t> b;
     auto vlq = [&](uint32_t v) { uint8_t o[5]; int n = 0; o[n++] = v & 127; while ((v >>= 7)) o[n++] = (v & 127) | 128; while (n) b.push_back(o[--n]); };
@@ -537,7 +609,7 @@ inline std::vector<uint8_t> midiFile(const std::vector<ExportItem>& items, doubl
     struct Ev { long t; int on, n; };
     std::vector<Ev> ev;
     double start = 0;
-    const double strum = style == Strum ? 0.06 / (60.0 / tempo) : 0;
+    const double strum = style == Strum ? strumAmt * 0.3 : 0;   // in beats
     for (auto& it : items) {
         const double len = it.bars * 4;
         std::pair<int, int> seq[kMaxGoats];
@@ -562,9 +634,25 @@ inline std::vector<uint8_t> midiFile(const std::vector<ExportItem>& items, doubl
         }
         start += len;
     }
+    if (motion && motion->on) {
+        std::vector<double> anchors; double a = 0;
+        for (auto& it : items) { anchors.push_back(a); a += it.bars * 4; }
+        int prev = -1;
+        for (double bt = 0; bt < start; bt += 1.0 / 8) {
+            int k = 0;
+            for (int j = 0; j < (int)anchors.size(); ++j) if (anchors[(size_t)j] <= bt + 1e-9) k = j;
+            const int v = (int)std::lround(127 * motion->gain(bt, bt - anchors[(size_t)k], k));
+            if (v != prev) { ev.push_back({std::lround(bt * PPQ), 2, std::clamp(v, 0, 127)}); prev = v; }
+        }
+    }
     std::stable_sort(ev.begin(), ev.end(), [](const Ev& x, const Ev& y) { return x.t != y.t ? x.t < y.t : x.on < y.on; });
     long last = 0;
-    for (auto& e : ev) { vlq((uint32_t)(e.t - last)); b.push_back(e.on ? 0x90 : 0x80); b.push_back((uint8_t)e.n); b.push_back(e.on ? 96 : 0); last = e.t; }
+    for (auto& e : ev) {
+        vlq((uint32_t)(e.t - last));
+        if (e.on == 2) { b.push_back(0xb0); b.push_back(11); b.push_back((uint8_t)e.n); }
+        else { b.push_back(e.on ? 0x90 : 0x80); b.push_back((uint8_t)e.n); b.push_back(e.on ? 96 : 0); }
+        last = e.t;
+    }
     vlq((uint32_t)std::max(0L, std::lround(start * PPQ) - last)); b.push_back(0xff); b.push_back(0x2f); b.push_back(0);
     std::vector<uint8_t> out{'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 0, 0, 1, 0, (uint8_t)PPQ, 'M', 'T', 'r', 'k'};
     const uint32_t len = (uint32_t)b.size();

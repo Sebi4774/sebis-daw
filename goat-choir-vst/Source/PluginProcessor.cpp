@@ -18,6 +18,7 @@ GoatChoirProcessor::GoatChoirProcessor()
 juce::AudioProcessorValueTreeState::ParameterLayout GoatChoirProcessor::createLayout() {
     using namespace juce;
     std::vector<std::unique_ptr<RangedAudioParameter>> p;
+    const auto pct = AudioParameterFloatAttributes().withStringFromValueFunction([](float v, int) { return String(std::lround(v * 100)) + "%"; }).withValueFromStringFunction([](const String& t) { return t.getFloatValue() / 100.0f; });
     StringArray keys; for (auto* n : goat::kNames) keys.add(n);
     auto ch = [&](const char* id, const char* name, StringArray opts, int def) { p.push_back(std::make_unique<AudioParameterChoice>(ParameterID{id, 1}, name, opts, def)); };
     ch("key", "Key", keys, 3);
@@ -33,6 +34,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout GoatChoirProcessor::createLa
     p.push_back(std::make_unique<AudioParameterFloat>(ParameterID{"volume", 1}, "Volume", NormalisableRange<float>(-24, 6, 0.1f), 0.0f,
                                                       AudioParameterFloatAttributes().withLabel("dB")));
     p.push_back(std::make_unique<AudioParameterBool>(ParameterID{"midiOut", 1}, "MIDI out", true));
+    p.push_back(std::make_unique<AudioParameterFloat>(ParameterID{"strum", 1}, "Strum", NormalisableRange<float>(0, 1, 0.01f), 0.45f, pct));
+    p.push_back(std::make_unique<AudioParameterBool>(ParameterID{"motionOn", 1}, "Motion", false));
+    ch("motionSync", "Motion sync", {"Global", "Retrig"}, 0);
+    ch("motionLen", "Motion length", {"1/4", "1/2", "1 bar", "2 bars"}, 2);
+    p.push_back(std::make_unique<AudioParameterFloat>(ParameterID{"motionDepth", 1}, "Motion depth", NormalisableRange<float>(0, 1, 0.01f), 1.0f, pct));
+    p.push_back(std::make_unique<AudioParameterFloat>(ParameterID{"motionChance", 1}, "Motion chance", NormalisableRange<float>(0, 1, 0.01f), 1.0f, pct));
     return {p.begin(), p.end()};
 }
 
@@ -89,6 +96,28 @@ void GoatChoirProcessor::progChanged() {
     }
     progDirty = true;
     if (prog.empty() && progPlayWanted) setProgPlaying(false);
+}
+
+namespace { const double kMotionLen[4] = {0.25, 0.5, 1, 2}; }
+void GoatChoirProcessor::motionChanged() {
+    ++motionVersion;
+    if (motionPts.size() > (size_t)goat::Motion::kMaxPts) motionPts.resize((size_t)goat::Motion::kMaxPts);
+    {
+        const juce::SpinLock::ScopedLockType l(motionLock);
+        motionSharedN = (int)motionPts.size();
+        for (int i = 0; i < motionSharedN; ++i) motionShared[(size_t)i] = motionPts[(size_t)i];
+    }
+    motionDirty = true;
+}
+goat::Motion GoatChoirProcessor::motionNow() const {
+    goat::Motion m;
+    m.setPoints(motionPts);
+    m.on = apvts.getRawParameterValue("motionOn")->load() > 0.5f;
+    m.sync = choice("motionSync");
+    m.lenBars = kMotionLen[choice("motionLen")];
+    m.depth = apvts.getRawParameterValue("motionDepth")->load();
+    m.chance = apvts.getRawParameterValue("motionChance")->load();
+    return m;
 }
 
 void GoatChoirProcessor::labels(std::array<goat::ChordLabel, goat::kStrips>& out) const {
@@ -166,6 +195,20 @@ void GoatChoirProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     choir.sel = selected.load();
     for (int k = 0; k < goat::kMaxGoats; ++k) { choir.setVoiceType(k, voiceType[k].load()); choir.setMuted(k, muted[k].load()); }
     choir.setCount(choice("goats"));
+    choir.strum = apvts.getRawParameterValue("strum")->load();
+    choir.motion.on = apvts.getRawParameterValue("motionOn")->load() > 0.5f;
+    choir.motion.sync = choice("motionSync");
+    choir.motion.lenBars = kMotionLen[choice("motionLen")];
+    choir.motion.depth = apvts.getRawParameterValue("motionDepth")->load();
+    choir.motion.chance = apvts.getRawParameterValue("motionChance")->load();
+    if (motionDirty.load()) {
+        const juce::SpinLock::ScopedTryLockType l(motionLock);
+        if (l.isLocked()) {
+            choir.motion.n = motionSharedN;
+            for (int i = 0; i < motionSharedN; ++i) choir.motion.pts[(size_t)i] = motionShared[(size_t)i];
+            motionDirty = false;
+        }
+    }
     if (choice("keys") != 0) stripKey = -1;
 
     if (progDirty.load()) {
@@ -246,7 +289,7 @@ void GoatChoirProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
 
     // report to the editor and the recorder
     for (int k = 0; k < goat::kMaxGoats; ++k) { goatLevel[k] = (float)(choir.voice(k).amp / 0.22); goatNote[k] = choir.soundingNote(k); }
-    currentChord = choir.current; progPos = choir.progPlaying ? choir.progPos : -1;
+    currentChord = choir.current; motionPhase = (float)choir.motionPhase; progPos = choir.progPlaying ? choir.progPos : -1;
     if (choir.nTrig) {
         const auto scope = trigFifo.write(choir.nTrig);
         for (int j = 0; j < scope.blockSize1; ++j) trigBuf[(size_t)(scope.startIndex1 + j)] = choir.trig[(size_t)j];
@@ -268,7 +311,8 @@ bool GoatChoirProcessor::writeMidi(const juce::File& f) const {
     if (kDemo || prog.empty()) return false;
     std::vector<goat::ExportItem> items;
     for (auto& it : prog) items.push_back({it.notes, it.bars});
-    const auto bytes = goat::midiFile(items, hostBpm.load(), choice("style"),
+    const auto mo = motionNow();
+    const auto bytes = goat::midiFile(items, hostBpm.load(), choice("style"), apvts.getRawParameterValue("strum")->load(), &mo,
                                       "Goat Choir plugin (c) 2026 Sebi Inc. All rights reserved. v" JucePlugin_VersionString);
     return f.replaceWithData(bytes.data(), bytes.size());
 }
@@ -292,6 +336,12 @@ void GoatChoirProcessor::getStateInformation(juce::MemoryBlock& destData) {
         c.setProperty("notes", notes.trim(), nullptr);
         pr.appendChild(c, nullptr);
     }
+    juce::ValueTree mo("Motion");
+    mo.setProperty("shape", motionShape, nullptr);
+    juce::String pts; for (auto& [x, y] : motionPts) pts << x << "," << y << " ";
+    mo.setProperty("pts", pts.trim(), nullptr);
+    state.removeChild(state.getChildWithName("Motion"), nullptr);
+    state.appendChild(mo, nullptr);
     state.removeChild(state.getChildWithName("Cast"), nullptr);
     state.removeChild(state.getChildWithName("Prog"), nullptr);
     state.appendChild(cast, nullptr); state.appendChild(pr, nullptr);
@@ -302,7 +352,14 @@ void GoatChoirProcessor::setStateInformation(const void* data, int sizeInBytes) 
     auto xml = getXmlFromBinary(data, sizeInBytes);
     if (!xml || !xml->hasTagName(apvts.state.getType())) return;
     auto state = juce::ValueTree::fromXml(*xml);
-    const auto cast = state.getChildWithName("Cast"), pr = state.getChildWithName("Prog");
+    const auto cast = state.getChildWithName("Cast"), pr = state.getChildWithName("Prog"), mo = state.getChildWithName("Motion");
+    if (mo.isValid()) {
+        std::vector<std::pair<float, float>> v;
+        for (auto& t : juce::StringArray::fromTokens(mo.getProperty("pts").toString(), " ", ""))
+            if (t.contains(",")) v.push_back({juce::jlimit(0.0f, 1.0f, t.upToFirstOccurrenceOf(",", false, false).getFloatValue()),
+                                              juce::jlimit(0.0f, 1.0f, t.fromFirstOccurrenceOf(",", false, false).getFloatValue())});
+        if (v.size() >= 2) { motionPts = v; motionShape = (int)mo.getProperty("shape", -1); motionChanged(); }
+    }
     apvts.replaceState(state);
     if (cast.isValid()) {
         selected = (int)cast.getProperty("sel", 0);

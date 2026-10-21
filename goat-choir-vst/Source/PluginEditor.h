@@ -13,10 +13,13 @@ class LnF : public juce::LookAndFeel_V4 {
 public:
     LnF();
     void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour&, bool over, bool down) override;
-    juce::Font getTextButtonFont(juce::TextButton&, int h) override { return juce::Font(juce::jmin(15.0f, h * 0.55f), juce::Font::bold); }
+    juce::Font getTextButtonFont(juce::TextButton& b, int h) override {
+        return juce::Font(b.getProperties().contains("small") ? 11.5f : juce::jmin(15.0f, h * 0.55f), juce::Font::bold);
+    }
     void drawComboBox(juce::Graphics&, int w, int h, bool down, int, int, int, int, juce::ComboBox&) override;
     juce::Font getComboBoxFont(juce::ComboBox&) override { return juce::Font(14.0f, juce::Font::bold); }
     void drawLinearSlider(juce::Graphics&, int x, int y, int w, int h, float pos, float, float, juce::Slider::SliderStyle, juce::Slider&) override;
+    void drawRotarySlider(juce::Graphics&, int x, int y, int w, int h, float pos, float a0, float a1, juce::Slider&) override;
 };
 
 // the green-mountain ledge with the clay goats on it; steps at 12 fps like stop-motion
@@ -74,6 +77,40 @@ private:
     std::vector<juce::Rectangle<float>> rects;
 };
 
+// Motion: draw the curve the choir's level follows. Drag points, click to add one, double-click to remove one
+class MotionCurve : public juce::Component, private juce::Timer {
+public:
+    explicit MotionCurve(GoatChoirProcessor& p) : proc(p) { startTimerHz(30); }
+    void paint(juce::Graphics&) override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override { drag = -1; repaint(); }
+    void mouseDoubleClick(const juce::MouseEvent&) override;
+    std::function<void()> onEdit;   // the drawing became custom
+private:
+    void timerCallback() override { repaint(); }
+    juce::Point<float> toUnit(juce::Point<float>) const;
+    juce::Point<float> toPx(float x, float y) const;
+    int nearPoint(juce::Point<float>) const;
+    GoatChoirProcessor& proc;
+    int drag = -1;
+};
+
+// a vertical 0-100% bar for a parameter (Motion depth and chance)
+class VBar : public juce::Component {
+public:
+    VBar(GoatChoirProcessor& p, const char* paramId, const juce::String& title);
+    void paint(juce::Graphics&) override;
+    void mouseDown(const juce::MouseEvent& e) override { att->beginGesture(); set(e); }
+    void mouseDrag(const juce::MouseEvent& e) override { set(e); }
+    void mouseUp(const juce::MouseEvent&) override { att->endGesture(); }
+private:
+    void set(const juce::MouseEvent&);
+    juce::String title;
+    float value = 1;
+    std::unique_ptr<juce::ParameterAttachment> att;
+};
+
 // drag this straight into FL's playlist or piano roll
 class DragHandle : public juce::Component {
 public:
@@ -110,7 +147,15 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> midiOutAtt;
     juce::Slider vol, room;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> volAtt, roomAtt;
-    gc::Seg sing, style, vowel, chop;
+    gc::Seg sing, style, vowel, chop, motionSync, motionLen;
+    juce::Slider strumKnob;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> strumAtt;
+    juce::TextButton motionOnBtn{"Motion"};
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> motionOnAtt;
+    juce::OwnedArray<juce::TextButton> shapeBtns;
+    gc::MotionCurve curve;
+    gc::VBar depthBar, chanceBar;
+    void refreshShapes();
     juce::TextButton fewer{"-"}, more{"+"}, latchBtn{"Latch"}, stopBtn{"Stop"};
     std::unique_ptr<juce::ParameterAttachment> goatsAtt;
     int goats = 4;
@@ -122,7 +167,7 @@ private:
     gc::DragHandle drag;
     juce::Label status;
     juce::uint32 sayUntil = 0;
-    int seenVersion = -1, seenKey = -1, seenSel = -1, seenPos = -2;
+    int seenVersion = -1, seenKey = -1, seenSel = -1, seenPos = -2, seenMotion = -1;
     std::unique_ptr<juce::FileChooser> chooser;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(GoatChoirEditor)
 };
