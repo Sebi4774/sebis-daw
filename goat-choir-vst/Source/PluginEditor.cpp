@@ -375,10 +375,20 @@ Seg::Seg(GoatChoirProcessor& p, const char* paramId, const String& t) : title(t)
     });
     att->sendInitialUpdate();
 }
+void Seg::setRows(int r) {
+    rows = jmax(1, r);
+    for (auto* b : buttons) {
+        if (rows > 1) b->getProperties().set("small", true); else b->getProperties().remove("small");
+        b->setButtonText(b->getButtonText().replace(" Dn", String::fromUTF8(" \xe2\x86\x93")));   // Arp Dn -> Arp (down arrow)
+    }
+    resized();
+}
 void Seg::resized() {
     auto r = getLocalBounds().withTrimmedTop(16);
-    const int bw = r.getWidth() / jmax(1, buttons.size());
-    for (auto* b : buttons) b->setBounds(r.removeFromLeft(bw).reduced(1, 0));
+    const int perRow = (buttons.size() + rows - 1) / rows, rh = r.getHeight() / rows;
+    const int bw = r.getWidth() / jmax(1, perRow);
+    for (int i = 0; i < buttons.size(); ++i)
+        buttons[i]->setBounds(Rectangle<int>(r.getX() + (i % perRow) * bw, r.getY() + (i / perRow) * rh, bw, rh).reduced(1, rows > 1 ? 1 : 0));
 }
 void Seg::paint(Graphics& g) {
     g.setColour(col::dim); g.setFont(bold(11));
@@ -589,6 +599,7 @@ GoatChoirEditor::GoatChoirEditor(GoatChoirProcessor& p)
     vol.setTooltip("Volume"); room.setTooltip("Room: how much mountain echo");
 
     for (auto* c : {&sing, &style, &vowel, &chop, &motionSync, &motionLen}) addAndMakeVisible(*c);
+    style.setRows(2);
 
     // Strum knob: the gap between goats, low to high. Turning it up from Block switches to Strum
     strumKnob.setSliderStyle(Slider::RotaryHorizontalVerticalDrag);
@@ -795,7 +806,7 @@ void GoatChoirEditor::resized() {
     for (int i = 0; i < goat::kStrips; ++i) strips[(size_t)i]->setBounds(sx + (i % 8) * sw, sy + (i / 8) * sh, sw, sh);
 
     sing.setBounds(12, 492, 210, 48);
-    style.setBounds(236, 492, 210, 48);
+    style.setBounds(236, 492, 210, 72);   // 4 x 2 grid of the eight styles
     vowel.setBounds(460, 492, 330, 48);
     chop.setBounds(804, 492, 244, 48);
 

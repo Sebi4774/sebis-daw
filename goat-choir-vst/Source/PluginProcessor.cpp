@@ -25,7 +25,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout GoatChoirProcessor::createLa
     ch("scale", "Scale", {"Minor", "Harmonic minor", "Major"}, 0);
     ch("colour", "Colour", {"Triads", "7ths", "9ths"}, 1);
     ch("sing", "Sing", {"Choir", "Unison", "Solo"}, 0);
-    ch("style", "Style", {"Block", "Strum", "Arp"}, 0);
+    ch("style", "Style", {"Block", "Strum", "Down", "Arp", "Arp Dn", "Broken", "Pulse", "Bounce"}, 0);
     ch("vowel", "Vowel", {"OO", "OH", "AH", "EH", "EE", "Mm"}, 2);
     ch("chop", "Chop", {"Off", "1/8", "1/16", "1/32"}, 0);
     ch("keys", "MIDI keys", {"Chord strips", "Sing my notes"}, 0);

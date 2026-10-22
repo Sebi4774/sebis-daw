@@ -58,8 +58,10 @@ public:
     Seg(GoatChoirProcessor& p, const char* paramId, const juce::String& title);
     void resized() override;
     void paint(juce::Graphics&) override;
+    void setRows(int r);
 private:
     juce::String title;
+    int rows = 1;
     juce::OwnedArray<juce::TextButton> buttons;
     std::unique_ptr<juce::ParameterAttachment> att;
 };

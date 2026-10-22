@@ -4,7 +4,7 @@ The Goat Choir app as a plugin for FL Studio and other Windows DAWs: 16 chord st
 clay goats that sing them with formant synthesis (no AI voices), host tempo sync, MIDI out of the sung notes,
 and progressions you record, loop with the song, and drag into FL as MIDI.
 
-`Source/ChoirCore.h` is a C++ port of the app's `main.js` (chords, voicing, voices, strum, arp, chop, MIDI file)
+`Source/ChoirCore.h` is a C++ port of the app's `main.js` (chords, voicing, voices, the 8 playing styles, chop, MIDI file)
 with no JUCE in it. `Source/PluginProcessor.*` wraps it as a plugin; `Source/PluginEditor.*` draws the stage and
 controls. `INSTALL.txt` is the user guide that ships in the zip.
 

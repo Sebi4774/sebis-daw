@@ -1,6 +1,6 @@
 // Goat Choir - the sound and the chord logic, with no JUCE in it (so the test tool can drive it directly).
 // A C++ port of the Goat Choir app (goat-choir/source/src/main.js): same 16 chord strips, same voicing,
-// same formant goats (glottal-style wave into five resonators, no AI voices), same strum, arp and chop.
+// same formant goats (glottal-style wave into five resonators, no AI voices), same strum, playing styles and chop.
 // Sebi picks the chords; the choir only voices them.
 #pragma once
 #include <algorithm>
@@ -55,7 +55,9 @@ constexpr double kFGain[5] = {1, 0.62, 0.32, 0.18, 0.1};
 enum Scale { Minor, Harmonic, Major };
 enum Fn { Tonic, Pre, Dom };
 enum Mode { Choir, Unison, Solo };
-enum Style { Block, Strum, Arp };
+// Block/Strum/Down sing the chord at once (Strum low to high, Down high to low); the rest step every 1/8 note
+enum Style { Block, Strum, Down, Arp, ArpDown, Broken, Pulse, Bounce, kStyles };
+inline bool patterned(int style) { return style >= Arp; }
 constexpr int kScales[3][7] = {{0, 2, 3, 5, 7, 8, 10}, {0, 2, 3, 5, 7, 8, 11}, {0, 2, 4, 5, 7, 9, 11}};
 
 struct Chord { int rootPc = 0, n = 0, fn = 0; int iv[5]{}, pcs[5]{}; };
@@ -219,15 +221,41 @@ inline Plan assignNotes(const int* held, int nh, const std::array<SingerInfo, kM
     return out;
 }
 
-// arp: up and back down the chord, one goat at a time; entries are (goat, note) sorted by pitch
-inline int arpPattern(const std::pair<int, int>* seq, int n, std::pair<int, int>* pat) {
+// The stepped styles: each 1/8-note step is a list of (goat, note) that sing; gate = how much of the step they hold.
+// arp, arp down and broken go one goat at a time and skip doubled pitches; pulse and bounce use every goat.
+struct Pattern {
+    static constexpr int kMaxSteps = kMaxGoats * 2;
+    int n = 0; double gate = 1;
+    int size[kMaxSteps]{};
+    std::pair<int, int> step[kMaxSteps][kMaxGoats];
+    void one(const std::pair<int, int>& x) { size[n] = 1; step[n++][0] = x; }
+};
+// seq = (goat, note) sorted by pitch
+inline void buildPattern(int style, const std::pair<int, int>* seq, int n, Pattern& P) {
+    P = {};
+    if (!n) return;
     int nu = 0;
-    std::pair<int, int> up[kMaxGoats];
-    for (int k = 0; k < n; ++k) if (k == 0 || seq[k].second != seq[k - 1].second) up[nu++] = seq[k];
-    int np = 0;
-    for (int k = 0; k < nu; ++k) pat[np++] = up[k];
-    if (nu > 2) for (int k = nu - 2; k >= 1; --k) pat[np++] = up[k];
-    return np;
+    std::pair<int, int> u[kMaxGoats];
+    for (int k = 0; k < n; ++k) if (k == 0 || seq[k].second != seq[k - 1].second) u[nu++] = seq[k];
+    if (style == Arp) {
+        for (int k = 0; k < nu; ++k) P.one(u[k]);
+        if (nu > 2) for (int k = nu - 2; k >= 1; --k) P.one(u[k]);
+    } else if (style == ArpDown) {
+        for (int k = nu - 1; k >= 0; --k) P.one(u[k]);
+    } else if (style == Broken) {
+        if (nu < 3) for (int k = 0; k < nu; ++k) P.one(u[k]);
+        else for (int i : {0, nu - 1, nu - 2, nu - 1}) P.one(u[i]);
+    } else if (style == Pulse) {
+        P.gate = 0.55; P.n = 1; P.size[0] = n;
+        for (int k = 0; k < n; ++k) P.step[0][k] = seq[k];
+    } else if (style == Bounce) {
+        P.gate = 0.85;
+        if (n < 2) { P.n = 1; P.size[0] = n; P.step[0][0] = seq[0]; }
+        else {
+            P.n = 2; P.size[0] = 1; P.step[0][0] = seq[0]; P.size[1] = n - 1;
+            for (int k = 1; k < n; ++k) P.step[1][k - 1] = seq[k];
+        }
+    }
 }
 inline int sortedPlan(const Plan& p, std::pair<int, int>* out) {
     int n = 0;
@@ -320,9 +348,9 @@ struct Voice {
         setFormants(was ? vowel : (vowel == 5 ? 5 : 0), vowel, fs, !was);
         singing = true; note = n;
     }
-    void quiet() {
+    void quiet(double rel = 0.14) {
         if (!singing) return;
-        ampT = 0; ampC = coef(0.14); ngT = 0; ngC = coef(0.1); vibMode = 2; vibC = coef(0.2);
+        ampT = 0; ampC = coef(rel); ngT = 0; ngC = coef(0.1); vibMode = 2; vibC = coef(0.2);
         singing = false;
     }
     bool idle() const { return !singing && amp < 1e-5 && ng < 1e-6; }
@@ -485,14 +513,16 @@ public:
         std::pair<int, int> seq[kMaxGoats];
         const int n = sortedPlan(plan, seq);
         for (int k = 0; k < kMaxGoats; ++k) if (plan[k] >= 0) singers[k].last = plan[k];
-        if (style == Arp && n) {
+        if (patterned(style) && n) {
             for (int k = 0; k < kMaxGoats; ++k) quietGoat(k);
-            patN = arpPattern(seq, n, pat);
-            arpBase = (long long)std::floor(beatPos * 2); arpStep = -1; arpOn = true;
+            buildPattern(style, seq, n, pattern);
+            arpBase = (long long)std::floor(beatPos * 2); arpStep = -1; gateOff = false; arpOn = true;
         } else {
             for (int k = 0; k < kMaxGoats; ++k) if (plan[k] < 0) quietGoat(k);
+            const bool rolled = (style == Strum || style == Down) && allowStrum && strum > 0;
             for (int j = 0; j < n; ++j) {
-                if (style == Strum && allowStrum && j > 0 && strum > 0) pend[seq[j].first] = {seq[j].second, std::max(1, (int)(j * strum * 0.3 * 60.0 / bpm * sr))};
+                const int pos = style == Down ? n - 1 - j : j;   // Down: the top goat first
+                if (rolled && pos > 0) pend[seq[j].first] = {seq[j].second, std::max(1, (int)(pos * strum * 0.3 * 60.0 / bpm * sr))};
                 else startGoat(seq[j].first, seq[j].second);
             }
         }
@@ -518,13 +548,19 @@ public:
             curOff = offset + i;
             for (int k = 0; k < kMaxGoats; ++k)
                 if (pend[k].note >= 0 && --pend[k].delay <= 0) { startGoat(k, pend[k].note); pend[k].note = -1; }
-            if (arpOn && patN) {
-                const long long step = (long long)std::floor(beatPos * 2) - arpBase;
+            if (arpOn && pattern.n) {
+                const double sp = beatPos * 2 - (double)arpBase;
+                const long long step = (long long)std::floor(sp);
+                const int si = (int)(std::max(0LL, step) % pattern.n);
                 if (step > arpStep) {
-                    arpStep = step;
-                    const auto& p = pat[step % patN];
-                    for (int k = 0; k < kMaxGoats; ++k) if (k != p.first) quietGoat(k);
-                    startGoat(p.first, p.second);
+                    arpStep = step; gateOff = false;
+                    bool inStep[kMaxGoats] = {};
+                    for (int j = 0; j < pattern.size[si]; ++j) inStep[pattern.step[si][j].first] = true;
+                    for (int k = 0; k < kMaxGoats; ++k) if (!inStep[k]) quietGoat(k);
+                    for (int j = 0; j < pattern.size[si]; ++j) startGoat(pattern.step[si][j].first, pattern.step[si][j].second);
+                } else if (!gateOff && pattern.gate < 1 && sp - (double)arpStep >= pattern.gate) {
+                    gateOff = true;   // a short, clipped release so pulse and bounce stay tight
+                    for (int j = 0; j < pattern.size[si]; ++j) quietGoat(pattern.step[si][j].first, 0.045);
                 }
             }
             if (progPlaying && progN && (i & 15) == 0) stepProg();
@@ -560,8 +596,8 @@ private:
     std::array<int, 128> noteRef{};
     struct Pending { int note, delay; };
     std::array<Pending, kMaxGoats> pend{};
-    std::pair<int, int> pat[kMaxGoats * 2]; int patN = 0;
-    bool arpOn = false; long long arpBase = 0, arpStep = -1;
+    Pattern pattern;
+    bool arpOn = false, gateOff = false; long long arpBase = 0, arpStep = -1;
     Biquad chopLp; double chopC = 0, chopBase = 1, chopAmt = 0, chopVib = 0;
     int curOff = 0, builtKey = -1;
     double chordStartBeat = 0, motionG = 1, motionT = 1, motionC = 0.01; int chordCount = 0;
@@ -574,9 +610,9 @@ private:
         sounding[k] = n; singers[k].last = n;
         noteOn(n);
     }
-    void quietGoat(int k) {
+    void quietGoat(int k, double rel = 0.14) {
         pend[k].note = -1;
-        voices[k].quiet();
+        voices[k].quiet(rel);
         if (sounding[k] >= 0) { noteOff(sounding[k]); sounding[k] = -1; }
     }
     void stepProg() {
@@ -609,27 +645,31 @@ inline std::vector<uint8_t> midiFile(const std::vector<ExportItem>& items, doubl
     struct Ev { long t; int on, n; };
     std::vector<Ev> ev;
     double start = 0;
-    const double strum = style == Strum ? strumAmt * 0.3 : 0;   // in beats
+    const double strum = style == Strum || style == Down ? strumAmt * 0.3 : 0;   // in beats
     for (auto& it : items) {
         const double len = it.bars * 4;
         std::pair<int, int> seq[kMaxGoats];
         const int n = sortedPlan(it.notes, seq);
-        if (style == Arp) {
-            std::pair<int, int> pat[kMaxGoats * 2];
-            const int np = arpPattern(seq, n, pat);
-            for (int k = 0; np && k * 0.5 < len - 1e-6; ++k) {
-                const int nn = pat[k % np].second;
-                ev.push_back({std::lround((start + k * 0.5) * PPQ), 1, nn});
-                ev.push_back({std::lround((start + std::min(len, k * 0.5 + 0.5)) * PPQ), 0, nn});
+        if (patterned(style)) {
+            // stepped styles keep doubled notes (pulse and bounce sing every goat)
+            Pattern P;
+            buildPattern(style, seq, n, P);
+            for (int k = 0; P.n && k * 0.5 < len - 1e-6; ++k) {
+                const int si = k % P.n;
+                for (int j = 0; j < P.size[si]; ++j) {
+                    const int nn = P.step[si][j].second;
+                    ev.push_back({std::lround((start + k * 0.5) * PPQ), 1, nn});
+                    ev.push_back({std::lround((start + std::min(len, (k + P.gate) * 0.5)) * PPQ), 0, nn});
+                }
             }
         } else {
             bool seen[128] = {};
-            for (int j = 0; j < n; ++j) {
-                const int nn = seq[j].second;
-                if (seen[nn]) continue;
-                seen[nn] = true;
-                ev.push_back({std::lround((start + j * strum) * PPQ), 1, nn});
-                ev.push_back({std::lround((start + len) * PPQ), 0, nn});
+            int u[kMaxGoats], nu = 0;
+            for (int j = 0; j < n; ++j) if (!seen[seq[j].second]) { seen[seq[j].second] = true; u[nu++] = seq[j].second; }
+            for (int j = 0; j < nu; ++j) {
+                const int pos = style == Down ? nu - 1 - j : j;
+                ev.push_back({std::lround((start + pos * strum) * PPQ), 1, u[j]});
+                ev.push_back({std::lround((start + len) * PPQ), 0, u[j]});
             }
         }
         start += len;

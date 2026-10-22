@@ -23,9 +23,15 @@ PLAY IT
   * Click a strip with the mouse to hear it (Latch on = it keeps singing).
   * Key, Scale and Colour (triads / 7ths / 9ths) pick the 16 chords.
   * Sing: Choir (full voicing), Unison, Solo (the selected goat).
-    Style: Block, Strum, Arp (8th notes on the song's tempo).
+    Style (8 ways to play a chord):
+      Block   whole chord at once        Strum   rolled low to high
+      Down    rolled high to low         Arp     up and back down, 1/8 notes
+      Arp ↓   top to bottom, repeating   Broken  low, high, next, high
+      Pulse   whole chord every 1/8      Bounce  bass on the beat, rest on the "and"
+    The stepped styles (Arp to Bounce) follow the song's tempo, and the
+    MIDI export writes them exactly as the goats sing them.
     Vowel: OO OH AH EH EE Mm.  Chop: a gate locked to the song's tempo.
-  * Strum knob: how far apart the goats come in, low to high. Turning it
+  * Strum knob: how far apart the goats come in (Strum and Down). Turning it
     up from Block switches Style to Strum. Double-click resets it to 45%.
   * Motion: the choir's level follows a curve you draw, in time with the
     song. Pick a shape (Flat, Swell, Fade, Wave, Rise, Breathe, Pump, Gate,

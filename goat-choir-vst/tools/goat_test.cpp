@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
     if (p.prog.size() == 4) check(p.prog[0].bars == 1 && p.prog[1].bars == 1 && p.prog[2].bars == 1, "chord lengths follow the beat (1 bar each)");
 
     std::cout << "Progression player, arp, locked to the song:\n";
-    setParam(p, "style", 2);
+    setParam(p, "style", goat::Arp);
     p.setProgPlaying(true);
     r = render(p, host, sr, 16, {}, dir.getChildFile("02_prog_arp.wav"));
     check(r.peak > 0.05f, "arp progression plays");
@@ -101,8 +101,47 @@ int main(int argc, char** argv) {
     r = render(p, host, sr, 16, {}, dir.getChildFile("03_prog_strum_chop16.wav"));
     check(r.peak > 0.05f, "strum with chop plays");
     p.setProgPlaying(false);
-    setParam(p, "chop", 0); setParam(p, "style", 0);
+    setParam(p, "chop", 0);
+
+    std::cout << "All eight playing styles over the progression:\n";
+    const char* styleNames[] = {"block", "strum", "down", "arp", "arpdown", "broken", "pulse", "bounce"};
+    int styleOns[goat::kStyles] = {};
+    p.setProgPlaying(true);
+    for (int st = 0; st < goat::kStyles; ++st) {
+        setParam(p, "style", st);
+        r = render(p, host, sr, 16, {}, dir.getChildFile(String("06_style_") + styleNames[st] + ".wav"));
+        styleOns[st] = r.midiOn;
+        check(r.peak > 0.05f && r.peak < 1.0f, String(styleNames[st]) + " plays (" + String(r.midiOn) + " notes out)");
+    }
+    check(styleOns[goat::Pulse] > styleOns[goat::Arp] && styleOns[goat::Bounce] > styleOns[goat::Block], "pulse and bounce retrigger the chord");
+    p.setProgPlaying(false);
+    setParam(p, "style", 0);
     render(p, host, sr, 2, {}, dir.getChildFile("_flush.wav"), 0.5);
+
+    std::cout << "Playing styles in the MIDI file (one bar of 48 55 55 60):\n";
+    {
+        goat::Plan pl; pl.fill(-1); pl[0] = 48; pl[1] = 55; pl[2] = 55; pl[3] = 60;
+        auto ons = [&](int st, std::vector<std::pair<long, int>>* out = nullptr) {
+            const auto f = goat::midiFile({{pl, 1.0}}, 120, st, 0.45, nullptr, "test");
+            size_t i = 22; long t = 0; int count = 0; uint8_t run = 0;
+            while (i < f.size()) {
+                uint32_t d = 0; do d = (d << 7) | (f[i] & 127); while (f[i++] & 128);
+                t += (long)d;
+                if (f[i] == 0xff) { const uint8_t len = f[i + 2]; i += 3 + len; continue; }
+                if (f[i] & 0x80) run = f[i++];
+                const int nn = f[i]; i += (run & 0xf0) == 0xc0 || (run & 0xf0) == 0xd0 ? 1 : 2;
+                if ((run & 0xf0) == 0x90) { ++count; if (out) out->push_back({t, nn}); }
+            }
+            return count;
+        };
+        std::vector<std::pair<long, int>> down;
+        check(ons(goat::Block) == 3, "block dedupes the doubled 55 (3 notes)");
+        check(ons(goat::Down, &down) == 3 && down.size() == 3 && down[0].second == 60 && down[0].first == 0 && down[2].second == 48 && down[2].first > 0,
+              "down rolls from the top note");
+        check(ons(goat::Arp) == 8 && ons(goat::ArpDown) == 8 && ons(goat::Broken) == 8, "arp, arp down, broken: one note per 1/8");
+        check(ons(goat::Pulse) == 32, "pulse: whole chord every 1/8, doubles kept (" + String(ons(goat::Pulse)) + ")");
+        check(ons(goat::Bounce) == 16, "bounce: bass on the beat, the rest on the and (" + String(ons(goat::Bounce)) + ")");
+    }
 
     std::cout << "MIDI export:\n";
     const auto mid = dir.getChildFile(p.fileBase() + ".mid");
