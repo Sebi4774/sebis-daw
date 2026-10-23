@@ -1,0 +1,60 @@
+GOAT CHOIR - VST3 plugin for Windows (64-bit)          by Sebi Inc.
+=====================================================================
+
+WHAT'S IN THE ZIP
+  Goat Choir.vst3   the plugin (a folder; keep it whole)
+  Goat Choir.exe    the same thing as a stand-alone app, no DAW needed
+
+INSTALL
+  1. Copy the whole "Goat Choir.vst3" folder into
+        C:\Program Files\Common Files\VST3\
+  2. FL Studio 20 or newer: Options > Manage plugins > Find plugins.
+     Goat Choir shows up under Generators.
+     FL Studio 11 (VST2-only): add Carla-Rack to a channel, click Add Plugin,
+     refresh, pick Goat Choir.
+  Windows may warn that the file is from an unknown publisher (it is not
+  code-signed yet): click More info > Run anyway.
+
+PLAY IT
+  * Keys C5 to D#6 (FL's middle C and up) play chord strips 1 to 16.
+    Draw notes there in the piano roll, or play them on a MIDI keyboard.
+  * Or set MIDI KEYS to "Sing my notes": the goats sing exactly the keys
+    you hold, each goat in its own range.
+  * Click a strip with the mouse to hear it (Latch on = it keeps singing).
+  * Key, Scale and Colour (triads / 7ths / 9ths) pick the 16 chords.
+  * Sing: Choir (full voicing), Unison, Solo (the selected goat).
+    Style (8 ways to play a chord):
+      Block   whole chord at once        Strum   rolled low to high
+      Down    rolled high to low         Arp     up and back down, 1/8 notes
+      Arp ↓   top to bottom, repeating   Broken  low, high, next, high
+      Pulse   whole chord every 1/8      Bounce  bass on the beat, rest on the "and"
+    The stepped styles (Arp to Bounce) follow the song's tempo, and the
+    MIDI export writes them exactly as the goats sing them.
+    Vowel: OO OH AH EH EE Mm.  Chop: a gate locked to the song's tempo.
+  * Strum knob: how far apart the goats come in (Strum and Down). Turning it
+    up from Block switches Style to Strum. Double-click resets it to 45%.
+  * Motion: the choir's level follows a curve you draw, in time with the
+    song. Pick a shape (Flat, Swell, Fade, Wave, Rise, Breathe, Pump, Gate,
+    Stutter, Steps) or drag the points; click to add one, double-click to
+    remove one. Global follows the song's bars, Retrig restarts on every
+    chord. Length is 1/4 bar to 2 bars. Depth sets how deep it goes;
+    Chance skips some cycles at random (the same way every time).
+    Saved MIDI carries Motion as CC11 (expression).
+  * Click a goat to select it: change its voice, mute it, change its scarf.
+
+RECORD A PROGRESSION AND PUT IT IN FL
+  1. Press Rec and play strips. If FL is playing, each chord's length
+     follows the beat; otherwise each chord is 1 bar (click a chip to
+     change it: 1, 2, 4 or 1/2 bar).
+  2. Play loops it. While FL plays, the loop locks to the song position.
+  3. Drag "Drag MIDI to FL" onto the playlist or the piano roll,
+     or press Save MIDI (files go to Documents\Sebi Inc\Goat Choir).
+
+MIDI OUT
+  Goat Choir sends the notes the goats sing as MIDI, so another synth can
+  double the choir. In FL 20+: set the plugin's MIDI output port in its
+  wrapper settings and give the other synth the same input port.
+
+The "Made with JUCE" logo shows for a few seconds when the window opens.
+The voices are classic formant synthesis. No AI voices, ever.
+(c) 2026 Sebi Inc. All rights reserved.
