@@ -88,12 +88,14 @@ void LnF::drawLinearSlider(Graphics& g, int x, int y, int w, int h, float pos, f
     g.fillEllipse(pos - 7, cy - 7, 14, 14);
 }
 
-void LnF::drawRotarySlider(Graphics& g, int x, int y, int w, int h, float pos, float a0, float a1, Slider&) {
+void LnF::drawRotarySlider(Graphics& g, int x, int y, int w, int h, float pos, float a0, float a1, Slider& sl) {
     const auto r = Rectangle<float>((float)x, (float)y, (float)w, (float)h).reduced(4);
     const float rad = jmin(r.getWidth(), r.getHeight()) / 2, cx = r.getCentreX(), cy = r.getCentreY();
     Path track, val;
     track.addCentredArc(cx, cy, rad - 3, rad - 3, 0, a0, a1, true);
-    val.addCentredArc(cx, cy, rad - 3, rad - 3, 0, a0, a0 + (a1 - a0) * pos, true);
+    // a bipolar knob (Pitch) grows its arc from the top
+    const float from = sl.getProperties().contains("bipolar") ? (a0 + a1) / 2 : a0, to = a0 + (a1 - a0) * pos;
+    val.addCentredArc(cx, cy, rad - 3, rad - 3, 0, jmin(from, to), jmax(from, to), true);
     g.setColour(col::panel2); g.strokePath(track, PathStrokeType(5, PathStrokeType::curved, PathStrokeType::rounded));
     g.setColour(col::gold); g.strokePath(val, PathStrokeType(5, PathStrokeType::curved, PathStrokeType::rounded));
     const float a = a0 + (a1 - a0) * pos - MathConstants<float>::halfPi;
@@ -303,7 +305,16 @@ void Stage::paint(Graphics& g) {
     // the chord being sung
     const int cur = proc.currentChord.load();
     String name, roman;
-    if (cur >= 0) { name = String::fromUTF8(lab[(size_t)cur].name.c_str()); roman = String::fromUTF8(lab[(size_t)cur].roman.c_str()); }
+    if (cur >= 0) {
+        name = String::fromUTF8(lab[(size_t)cur].name.c_str()); roman = String::fromUTF8(lab[(size_t)cur].roman.c_str());
+        // with the Pitch knob moved, show the chord that sounds (the strips stay in the key)
+        if (const int sh = proc.pitch()) {
+            const int len = name.length() > 1 && name[1] == '#' ? 2 : 1;
+            int pc = 0;
+            while (pc < 12 && name.substring(0, len) != goat::kNames[pc]) ++pc;
+            if (pc < 12) name = goat::kNames[(pc + sh + 120) % 12] + name.substring(len);
+        }
+    }
     else {
         for (int k = 0; k < goat::kMaxGoats; ++k)
             if (proc.goatNote[(size_t)k].load() >= 0) { name = "Singing"; break; }
@@ -640,6 +651,21 @@ GoatChoirEditor::GoatChoirEditor(GoatChoirProcessor& p)
     strumKnob.setTooltip("Strum: how far apart the goats come in, low to high");
     addAndMakeVisible(strumKnob);
     strumAtt = std::make_unique<AudioProcessorValueTreeState::SliderAttachment>(p.apvts, "strum", strumKnob);
+
+    // Pitch knob: the whole choir up or down in semitones; the vowels keep their colour
+    pitchKnob.setSliderStyle(Slider::RotaryVerticalDrag);
+    pitchKnob.setTextBoxStyle(Slider::TextBoxBelow, true, 60, 16);
+    pitchKnob.setColour(Slider::textBoxBackgroundColourId, Colours::transparentBlack);
+    pitchKnob.setColour(Slider::textBoxOutlineColourId, Colours::transparentBlack);
+    pitchKnob.getProperties().set("bipolar", true);
+    pitchKnob.setMouseDragSensitivity(8 * 24);   // 8 px per semitone
+    pitchKnob.setWantsKeyboardFocus(true);
+    pitchKnob.setTooltip("Pitch: the whole choir up or down, in semitones. Double-click for 0");
+    addAndMakeVisible(pitchKnob);
+    pitchAtt = std::make_unique<AudioProcessorValueTreeState::SliderAttachment>(p.apvts, "pitch", pitchKnob);
+    pitchKnob.setDoubleClickReturnValue(true, 0);
+    pitchKnob.textFromValueFunction = [](double v) { const int i = (int)std::lround(v); return (i > 0 ? "+" : "") + String(i); };
+    pitchKnob.updateText();
     strumKnob.onValueChange = [this] {
         if (strumKnob.isMouseButtonDown() && strumKnob.getValue() > 0 && proc.choice("style") == goat::Block)
             if (auto* st = proc.apvts.getParameter("style")) { st->beginChangeGesture(); st->setValueNotifyingHost(st->convertTo0to1((float)goat::Strum)); st->endChangeGesture(); }
@@ -844,9 +870,10 @@ void GoatChoirEditor::paint(Graphics& g) {
     g.drawText("ROOM", 190, 552, 60, 14, Justification::left);
     g.drawText("MOUSE", 400, 552, 60, 14, Justification::left);
     g.drawText("SELECTED GOAT", 562, 552, 120, 14, Justification::left);
-    g.drawText("STRUM", 14, 612, 70, 14, Justification::left);
-    g.drawText("MOTION", 94, 612, 70, 14, Justification::left);
-    g.drawText("SHAPES", 342, 612, 70, 14, Justification::left);
+    g.drawText("STRUM", 12, 612, 60, 14, Justification::left);
+    g.drawText("PITCH", 74, 612, 60, 14, Justification::left);
+    g.drawText("MOTION", 142, 612, 70, 14, Justification::left);
+    g.drawText("SHAPES", 374, 612, 70, 14, Justification::left);
     g.drawText("WORDS", 14, 718, 60, 30, Justification::centredLeft);
     g.drawText("PROGRESSION", 14, 764, 120, 14, Justification::left);
     g.setColour(gc::col::ink); g.setFont(gc::bold(16));
@@ -886,11 +913,12 @@ void GoatChoirEditor::resized() {
     muteBtn.setBounds(894, 568, 70, 28);
     scarfBtn.setBounds(970, 568, 78, 28);
 
-    strumKnob.setBounds(10, 626, 70, 80);
-    motionOnBtn.setBounds(94, 630, 74, 26);
-    motionSync.setBounds(176, 614, 150, 42);
-    motionLen.setBounds(94, 664, 232, 42);
-    for (int i = 0; i < shapeBtns.size(); ++i) shapeBtns[i]->setBounds(340 + (i % 5) * 55, 630 + (i / 5) * 32, 53, 28);
+    strumKnob.setBounds(6, 626, 62, 80);
+    pitchKnob.setBounds(68, 626, 62, 80);
+    motionOnBtn.setBounds(140, 630, 74, 26);
+    motionSync.setBounds(222, 614, 140, 42);
+    motionLen.setBounds(140, 664, 222, 42);
+    for (int i = 0; i < shapeBtns.size(); ++i) shapeBtns[i]->setBounds(372 + (i % 5) * 49, 630 + (i / 5) * 32, 47, 28);
     curve.setBounds(620, 612, 296, 94);
     depthBar.setBounds(926, 612, 56, 94);
     chanceBar.setBounds(990, 612, 58, 94);

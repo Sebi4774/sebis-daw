@@ -237,6 +237,32 @@ int main(int argc, char** argv) {
     r = render(p, host, sr, 6, {}, dir.getChildFile("09_say_hello.wav"));
     check(r.peak > 0.05f && r.peak < 1.0f && r.midiOn == 0, "Say talks (no MIDI notes)");
 
+    std::cout << "Pitch knob +3 (D#m -> F#m):\n";
+    {
+        auto lowest = [&](const File& f) {
+            FileInputStream in(f); MidiFile mf; mf.readFrom(in); int lo = 128;
+            for (int t = 0; t < mf.getNumTracks(); ++t) for (auto* e : *mf.getTrack(t)) if (e->message.isNoteOn()) lo = jmin(lo, e->message.getNoteNumber());
+            return lo;
+        };
+        const auto m0 = dir.getChildFile("pitch0.mid"), m3 = dir.getChildFile("pitch3.mid");
+        p.writeMidi(m0);
+        host.playing = true;
+        std::vector<Ev> hold{{0, MidiMessage::noteOn(1, 60, (uint8)100)}};
+        render(p, host, sr, 1, hold, dir.getChildFile("_flush.wav"), 0);
+        int before[goat::kMaxGoats]; for (int k = 0; k < goat::kMaxGoats; ++k) before[k] = p.goatNote[(size_t)k].load();
+        setParam(p, "pitch", 3);
+        r = render(p, host, sr, 2, {{1.9, MidiMessage::noteOff(1, 60)}}, dir.getChildFile("10_pitch_up3_glide.wav"));
+        int nShift = 0;
+        for (int k = 0; k < goat::kMaxGoats; ++k) if (before[k] >= 0) ++nShift;
+        check(nShift > 0 && r.midiOn == nShift && r.midiOff == 2 * nShift, "goats already singing move up and the MIDI out follows (" + String(r.midiOn) + " re-sent)");
+        check(p.fileBase().contains("Fsm"), "the file name uses the sounding key (" + p.fileBase() + ")");
+        p.writeMidi(m3);
+        const int a0 = lowest(m0), a3 = lowest(m3);
+        check(a3 == a0 + 3, "the MIDI export is 3 semitones up (" + String(a0) + " -> " + String(a3) + ")");
+        setParam(p, "pitch", 0);
+        render(p, host, sr, 1, {}, dir.getChildFile("_flush.wav"), 0.3);
+    }
+
     std::cout << "State save and load:\n";
     MemoryBlock mb; p.getStateInformation(mb);
     GoatChoirProcessor q; q.setStateInformation(mb.getData(), (int)mb.getSize());

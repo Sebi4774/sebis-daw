@@ -349,10 +349,11 @@ struct Voice {
         ffC = coef(0.09); ffDelay = jump ? (int)(0.03 * sr) : 0;
     }
     // syl: the syllable to sing (Words on), id: which use of it, so a re-voiced chord keeps the word without new consonants
-    void sing(int n, int vowel, double fs, const Syl* syl = nullptr, long long id = -1) {
+    // shift: the Pitch knob in semitones; it moves the pitch only, so the vowels keep their colour
+    void sing(int n, int vowel, double fs, const Syl* syl = nullptr, long long id = -1, int shift = 0) {
         const bool was = singing;
         cancel(EvAmp | EvNg | EvForm | EvFreq | EvVib); sayEnd = -1;
-        const double f = mtof(n);
+        const double f = mtof(n + shift);
         if (!was) freq = f * 0.985;
         freqT = f; freqC = coef(was ? 0.055 : 0.03);
         ampT = 0.22 * (n < 45 ? 1.35 : n < 52 ? 1.15 : 1); ampC = coef(was ? 0.05 : 0.08);
@@ -391,6 +392,8 @@ struct Voice {
         vibMode = 2; vibC = coef(0.2);
         singing = false; sylId = -1;
     }
+    // the Pitch knob moved: a singing goat glides to its new pitch
+    void retune(int shift) { if (singing && sayEnd < 0) { freqT = mtof(note + shift); freqC = coef(0.04); } }
     bool idle() const { return !singing && amp < 1e-5 && ng < 1e-6 && evHead >= evs.size(); }
 
     // ---- Words: timed changes, the app's setTargetAtTime calls; u is seconds from now ----
@@ -451,10 +454,10 @@ struct Voice {
         schedule(EvAmp, u, L, 0.02); schedule(EvNg, u, kBreath, 0.03);
     }
     // Say: speak a line in a talking voice, with a falling speech melody (rising on a question)
-    void say(const Syl* syl, int n, const VoiceType& V) {
+    void say(const Syl* syl, int n, const VoiceType& V, int shift = 0) {
         cancel(~0); nCoda = 0; sylId = -1;
         fsNow = V.fs;
-        const double base = (V.lo + V.hi) / 2.0 - 1, L = sylLevel(base) * 1.5;
+        const double base = (V.lo + V.hi) / 2.0 - 1 + shift, L = sylLevel(base - shift) * 1.5;
         schedule(EvVib, 0, 4, 0.05);
         amp = ampT = 0; ffDelay = 0;
         // each syllable's place in its phrase (phrases end at punctuation)
@@ -586,6 +589,7 @@ class ChoirEngine {
 public:
     // settings, written by the owner before each block
     int root = 3, scale = Minor, ext = 4, mode = Choir, style = Block, vowel = 2, chop = 0, count = 4, sel = 0;
+    int pitch = 0;   // Pitch knob, -12..+12 semitones on everything the goats sing (set it with setPitch)
     double bpm = 140, beatPos = 0;
     bool hostPlaying = false;
     double strum = 0.45;   // Strum knob: gap between goats, low to high = strum * a beat * 0.3
@@ -625,6 +629,19 @@ public:
         vowel = v;
         for (int k = 0; k < kMaxGoats; ++k) if (voices[k].singing) voices[k].setFormants(v, v, kVoices[singers[k].voice].fs, false);
     }
+    void setPitch(int p) {
+        p = std::clamp(p, -12, 12);
+        if (p == pitch) return;
+        pitch = p;
+        for (int k = 0; k < kMaxGoats; ++k) {
+            voices[k].retune(p);
+            if (sounding[k] >= 0 && voices[k].singing) {   // the notes sent out follow
+                noteOff(sounding[k]);
+                sounding[k] = std::clamp(voices[k].note + p, 0, 127);
+                noteOn(sounding[k]);
+            }
+        }
+    }
     void setCount(int c) {
         c = std::clamp(c, 1, kMaxGoats);
         if (c == count) return;
@@ -654,7 +671,7 @@ public:
         if (!nSay) return;
         stopProg(); stopAll();
         const int k = sel < count ? sel : 0;
-        voices[k].say(sayBuf.data(), nSay, kVoices[singers[k].voice]);
+        voices[k].say(sayBuf.data(), nSay, kVoices[singers[k].voice], pitch);
     }
     void playPlan(const Plan& plan, int chordIdx, bool record, bool allowStrum, bool newSyl = true) {
         arpOn = false;
@@ -763,8 +780,8 @@ private:
     void noteOff(int n) { if (noteRef[n] > 0 && --noteRef[n] == 0) midiOut.push_back({curOff, n, false}); }
     void startGoat(int k, int n) {
         if (sounding[k] >= 0) noteOff(sounding[k]);
-        voices[k].sing(n, vowel, kVoices[singers[k].voice].fs, curSyl >= 0 ? &words[(size_t)curSyl] : nullptr, sylUse);
-        sounding[k] = n; singers[k].last = n;
+        voices[k].sing(n, vowel, kVoices[singers[k].voice].fs, curSyl >= 0 ? &words[(size_t)curSyl] : nullptr, sylUse, pitch);
+        sounding[k] = std::clamp(n + pitch, 0, 127); singers[k].last = n;   // MIDI out sends what is heard
         noteOn(n);
     }
     void quietGoat(int k, double rel = 0.14) {
@@ -789,7 +806,7 @@ struct ExportItem { Plan notes; double bars; };
 // strum = the Strum knob; motion (if on) is written as CC11 (expression) every 1/8 beat so the DAW plays the same swell
 // syl (Words on): one lyric event (FF 05) per syllable, at its chord or step
 inline std::vector<uint8_t> midiFile(const std::vector<ExportItem>& items, double tempo, int style, double strumAmt, const Motion* motion,
-                                     const std::string& owner, const Syl* syl = nullptr, int nSyl = 0) {
+                                     const std::string& owner, const Syl* syl = nullptr, int nSyl = 0, int transpose = 0) {
     const int PPQ = 96;
     std::vector<uint8_t> b;
     auto vlq = [&](uint32_t v) { uint8_t o[5]; int n = 0; o[n++] = v & 127; while ((v >>= 7)) o[n++] = (v & 127) | 128; while (n) b.push_back(o[--n]); };
@@ -858,7 +875,7 @@ inline std::vector<uint8_t> midiFile(const std::vector<ExportItem>& items, doubl
             b.push_back(0xff); b.push_back(0x05); vlq((uint32_t)tx.size());
             for (char c : tx) b.push_back((uint8_t)c & 127);
         } else if (e.on == 2) { b.push_back(0xb0); b.push_back(11); b.push_back((uint8_t)e.n); }
-        else { b.push_back(e.on ? 0x90 : 0x80); b.push_back((uint8_t)e.n); b.push_back(e.on ? 96 : 0); }
+        else { b.push_back(e.on ? 0x90 : 0x80); b.push_back((uint8_t)std::clamp(e.n + transpose, 0, 127)); b.push_back(e.on ? 96 : 0); }
         last = e.t;
     }
     vlq((uint32_t)std::max(0L, std::lround(start * PPQ) - last)); b.push_back(0xff); b.push_back(0x2f); b.push_back(0);

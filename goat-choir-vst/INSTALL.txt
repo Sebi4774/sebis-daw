@@ -33,6 +33,9 @@ PLAY IT
     Vowel: OO OH AH EH EE Mm.  Chop: a gate locked to the song's tempo.
   * Strum knob: how far apart the goats come in (Strum and Down). Turning it
     up from Block switches Style to Strum. Double-click resets it to 45%.
+  * Pitch knob: the whole choir up or down, -12 to +12 semitones (vowels
+    keep their colour). Drag, scroll or use the arrow keys; double-click
+    for 0. The strips stay in the key; MIDI out and Save MIDI are moved too.
   * Motion: the choir's level follows a curve you draw, in time with the
     song. Pick a shape (Flat, Swell, Fade, Wave, Rise, Breathe, Pump, Gate,
     Stutter, Steps) or drag the points; click to add one, double-click to

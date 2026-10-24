@@ -52,6 +52,22 @@ private:
     GoatChoirProcessor& proc; int idx;
 };
 
+// the Pitch knob: wheel and arrow keys move it one semitone
+class PitchKnob : public juce::Slider {
+public:
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails& w) override {
+        if (w.deltaY != 0) step(w.deltaY > 0 ? 1 : -1);
+    }
+    bool keyPressed(const juce::KeyPress& k) override {
+        const int c = k.getKeyCode();
+        if (c == juce::KeyPress::upKey || c == juce::KeyPress::rightKey) { step(1); return true; }
+        if (c == juce::KeyPress::downKey || c == juce::KeyPress::leftKey) { step(-1); return true; }
+        return juce::Slider::keyPressed(k);
+    }
+private:
+    void step(int d) { setValue(juce::jlimit(-12.0, 12.0, std::round(getValue()) + d), juce::sendNotificationSync); }
+};
+
 // a row of buttons that picks one option of a choice parameter
 class Seg : public juce::Component {
 public:
@@ -162,6 +178,8 @@ private:
     gc::Seg sing, style, vowel, chop, motionSync, motionLen;
     juce::Slider strumKnob;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> strumAtt;
+    gc::PitchKnob pitchKnob;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> pitchAtt;
     juce::TextButton motionOnBtn{"Motion"};
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> motionOnAtt;
     juce::OwnedArray<juce::TextButton> shapeBtns;

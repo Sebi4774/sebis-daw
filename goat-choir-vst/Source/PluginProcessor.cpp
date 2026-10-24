@@ -35,6 +35,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout GoatChoirProcessor::createLa
                                                       AudioParameterFloatAttributes().withLabel("dB")));
     p.push_back(std::make_unique<AudioParameterBool>(ParameterID{"midiOut", 1}, "MIDI out", true));
     p.push_back(std::make_unique<AudioParameterFloat>(ParameterID{"strum", 1}, "Strum", NormalisableRange<float>(0, 1, 0.01f), 0.45f, pct));
+    p.push_back(std::make_unique<AudioParameterInt>(ParameterID{"pitch", 1}, "Pitch", -12, 12, 0,
+                                                    AudioParameterIntAttributes().withStringFromValueFunction([](int v, int) { return (v > 0 ? "+" : "") + String(v); })
+                                                        .withLabel("st")));
     p.push_back(std::make_unique<AudioParameterBool>(ParameterID{"motionOn", 1}, "Motion", false));
     ch("motionSync", "Motion sync", {"Global", "Retrig"}, 0);
     ch("motionLen", "Motion length", {"1/4", "1/2", "1 bar", "2 bars"}, 2);
@@ -248,6 +251,7 @@ void GoatChoirProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     }
 
     choir.midiOut.clear(); choir.nTrig = 0; choir.setOffset(0);
+    choir.setPitch(pitch());   // after the clear, so the re-sent notes go out
     if (wordsDirty.load() || sayWanted.load()) {
         const juce::SpinLock::ScopedTryLockType l(wordsLock);
         if (l.isLocked()) {
@@ -337,7 +341,7 @@ void GoatChoirProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
 
 // ---------------- MIDI export ----------------
 juce::String GoatChoirProcessor::fileBase() const {
-    return (juce::String("choir chords ") + goat::kNames[choice("key")] + (choice("scale") == goat::Major ? "" : "m") + " "
+    return (juce::String("choir chords ") + goat::kNames[(choice("key") + pitch() + 120) % 12] + (choice("scale") == goat::Major ? "" : "m") + " "
             + juce::String((int)std::lround(hostBpm.load())) + "bpm").replace("#", "s");
 }
 juce::File GoatChoirProcessor::exportFolder() {
@@ -352,7 +356,7 @@ bool GoatChoirProcessor::writeMidi(const juce::File& f) const {
     const auto mo = motionNow();
     const auto bytes = goat::midiFile(items, hostBpm.load(), choice("style"), apvts.getRawParameterValue("strum")->load(), &mo,
                                       "Goat Choir plugin (c) 2026 Sebi Inc. All rights reserved. v" JucePlugin_VersionString,
-                                      wordsOn ? wordsSyl.data() : nullptr, wordsOn ? (int)wordsSyl.size() : 0);
+                                      wordsOn ? wordsSyl.data() : nullptr, wordsOn ? (int)wordsSyl.size() : 0, pitch());
     return f.replaceWithData(bytes.data(), bytes.size());
 }
 

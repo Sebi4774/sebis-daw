@@ -39,6 +39,7 @@ public:
     juce::AudioProcessorValueTreeState apvts;
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     int choice(const char* id) const { return (int)apvts.getRawParameterValue(id)->load(); }
+    int pitch() const { return (int)std::lround(apvts.getRawParameterValue("pitch")->load()); }   // Pitch knob, semitones
 
     // ---- the editor (message thread) talks to the audio thread through these ----
     void uiStrip(int i, bool down);
