@@ -113,6 +113,16 @@ private:
     std::unique_ptr<juce::ParameterAttachment> att;
 };
 
+// the Words line, with the word the goats are singing lit up
+class WordsLine : public juce::Component {
+public:
+    explicit WordsLine(GoatChoirProcessor& p) : proc(p) {}
+    void paint(juce::Graphics&) override;
+    int shown = -2, version = -1;
+private:
+    GoatChoirProcessor& proc;
+};
+
 // drag this straight into FL's playlist or piano roll
 class DragHandle : public juce::Component {
 public:
@@ -167,6 +177,10 @@ private:
     gc::Chips chips;
     juce::Viewport chipsView;
     gc::DragHandle drag;
+    juce::TextEditor wordsBox;
+    gc::WordsLine wordsLine;
+    juce::TextButton wordsOnBtn{"Words off"}, sayBtn{"Say"};
+    void refreshWords();
     juce::Label status;
     juce::uint32 sayUntil = 0;
     int seenVersion = -1, seenKey = -1, seenSel = -1, seenPos = -2, seenMotion = -1;

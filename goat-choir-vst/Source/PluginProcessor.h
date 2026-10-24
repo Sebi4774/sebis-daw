@@ -78,6 +78,16 @@ public:
     goat::Motion motionNow() const;   // the curve + its parameters, for export and drawing
     std::atomic<float> motionPhase{-1.0f};
 
+    // Words (message thread): typing a line turns them on; the button switches back to plain vowels, keeping the text
+    juce::String wordsText;
+    bool wordsOn = false;
+    std::vector<goat::Syl> wordsSyl;
+    juce::StringArray wordsList;   // the words of the line, for the editor
+    int wordsVersion = 0;
+    void setWords(const juce::String& text, bool on);
+    void uiSay();   // the selected goat speaks the line
+    std::atomic<int> sungWord{-1};
+
     // MIDI export: the progression as the choir sings it in the current style
     juce::String fileBase() const;
     bool writeMidi(const juce::File& f) const;
@@ -104,6 +114,10 @@ private:
     std::array<std::pair<float, float>, goat::Motion::kMaxPts> motionShared{};
     int motionSharedN = 0;
     std::atomic<bool> motionDirty{true};
+    juce::SpinLock wordsLock;
+    std::array<goat::Syl, goat::kMaxSyl> wordsShared, sayShared;
+    int wordsSharedN = 0, saySharedN = 0; bool wordsSharedOn = false;
+    std::atomic<bool> wordsDirty{false}, sayWanted{false};
     bool progPlayWanted = false;
     int recLastQ = 0; bool recTimed = false;
 

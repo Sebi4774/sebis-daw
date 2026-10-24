@@ -120,6 +120,32 @@ goat::Motion GoatChoirProcessor::motionNow() const {
     return m;
 }
 
+void GoatChoirProcessor::setWords(const juce::String& text, bool on) {
+    wordsText = text.substring(0, 300);
+    wordsSyl = goat::textToSyllables(wordsText.toStdString());
+    wordsOn = on && !wordsSyl.empty();
+    wordsList.clear();
+    for (auto& y : wordsSyl) if (y.first) wordsList.add(juce::String(y.lyr).trimCharactersAtEnd("-"));
+    ++wordsVersion;
+    {
+        const juce::SpinLock::ScopedLockType l(wordsLock);
+        wordsSharedN = (int)wordsSyl.size(); wordsSharedOn = wordsOn;
+        for (int i = 0; i < wordsSharedN; ++i) wordsShared[(size_t)i] = wordsSyl[(size_t)i];
+    }
+    wordsDirty = true;
+}
+void GoatChoirProcessor::uiSay() {
+    const auto line = wordsText.trim().isEmpty() ? juce::String("Hello. We are the goat choir.") : wordsText;
+    const auto syl = goat::textToSyllables(line.toStdString());
+    if (syl.empty()) return;
+    {
+        const juce::SpinLock::ScopedLockType l(wordsLock);
+        saySharedN = (int)syl.size();
+        for (int i = 0; i < saySharedN; ++i) sayShared[(size_t)i] = syl[(size_t)i];
+    }
+    sayWanted = true;
+}
+
 void GoatChoirProcessor::labels(std::array<goat::ChordLabel, goat::kStrips>& out) const {
     std::array<goat::Chord, goat::kStrips> c;
     goat::buildChords(choice("key"), choice("scale"), choice("colour") + 3, c, &out);
@@ -168,7 +194,7 @@ void GoatChoirProcessor::handleMidi(const juce::MidiMessage& m) {
     held[(size_t)n] = m.isNoteOn();
     int notes[128], nh = 0;
     for (int k = 0; k < 128; ++k) if (held[(size_t)k]) notes[nh++] = k;
-    choir.playNotes(notes, nh);
+    choir.playNotes(notes, nh, m.isNoteOn());
 }
 
 void GoatChoirProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) {
@@ -222,6 +248,17 @@ void GoatChoirProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     }
 
     choir.midiOut.clear(); choir.nTrig = 0; choir.setOffset(0);
+    if (wordsDirty.load() || sayWanted.load()) {
+        const juce::SpinLock::ScopedTryLockType l(wordsLock);
+        if (l.isLocked()) {
+            if (wordsDirty.exchange(false)) choir.setWords(wordsShared.data(), wordsSharedN, wordsSharedOn);
+            if (sayWanted.exchange(false)) {
+                choir.nSay = saySharedN;
+                for (int i = 0; i < saySharedN; ++i) choir.sayBuf[(size_t)i] = sayShared[(size_t)i];
+                choir.sayLine();
+            }
+        }
+    }
     {
         const auto scope = cmdFifo.read(cmdFifo.getNumReady());
         auto run = [&](int start, int cnt) {
@@ -289,6 +326,7 @@ void GoatChoirProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
 
     // report to the editor and the recorder
     for (int k = 0; k < goat::kMaxGoats; ++k) { goatLevel[k] = (float)(choir.voice(k).amp / 0.22); goatNote[k] = choir.soundingNote(k); }
+    sungWord = choir.wordsOn ? choir.lastWord : -1;
     currentChord = choir.current; motionPhase = (float)choir.motionPhase; progPos = choir.progPlaying ? choir.progPos : -1;
     if (choir.nTrig) {
         const auto scope = trigFifo.write(choir.nTrig);
@@ -313,7 +351,8 @@ bool GoatChoirProcessor::writeMidi(const juce::File& f) const {
     for (auto& it : prog) items.push_back({it.notes, it.bars});
     const auto mo = motionNow();
     const auto bytes = goat::midiFile(items, hostBpm.load(), choice("style"), apvts.getRawParameterValue("strum")->load(), &mo,
-                                      "Goat Choir plugin (c) 2026 Sebi Inc. All rights reserved. v" JucePlugin_VersionString);
+                                      "Goat Choir plugin (c) 2026 Sebi Inc. All rights reserved. v" JucePlugin_VersionString,
+                                      wordsOn ? wordsSyl.data() : nullptr, wordsOn ? (int)wordsSyl.size() : 0);
     return f.replaceWithData(bytes.data(), bytes.size());
 }
 
@@ -342,6 +381,10 @@ void GoatChoirProcessor::getStateInformation(juce::MemoryBlock& destData) {
     mo.setProperty("pts", pts.trim(), nullptr);
     state.removeChild(state.getChildWithName("Motion"), nullptr);
     state.appendChild(mo, nullptr);
+    juce::ValueTree wo("Words");
+    wo.setProperty("text", wordsText, nullptr); wo.setProperty("on", wordsOn, nullptr);
+    state.removeChild(state.getChildWithName("Words"), nullptr);
+    state.appendChild(wo, nullptr);
     state.removeChild(state.getChildWithName("Cast"), nullptr);
     state.removeChild(state.getChildWithName("Prog"), nullptr);
     state.appendChild(cast, nullptr); state.appendChild(pr, nullptr);
@@ -353,6 +396,8 @@ void GoatChoirProcessor::setStateInformation(const void* data, int sizeInBytes) 
     if (!xml || !xml->hasTagName(apvts.state.getType())) return;
     auto state = juce::ValueTree::fromXml(*xml);
     const auto cast = state.getChildWithName("Cast"), pr = state.getChildWithName("Prog"), mo = state.getChildWithName("Motion");
+    const auto wo = state.getChildWithName("Words");
+    setWords(wo.isValid() ? wo.getProperty("text").toString() : juce::String(), wo.isValid() && (bool)wo.getProperty("on", false));
     if (mo.isValid()) {
         std::vector<std::pair<float, float>> v;
         for (auto& t : juce::StringArray::fromTokens(mo.getProperty("pts").toString(), " ", ""))

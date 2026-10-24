@@ -41,6 +41,11 @@ PLAY IT
     Chance skips some cycles at random (the same way every time).
     Saved MIDI carries Motion as CC11 (expression).
   * Click a goat to select it: change its voice, mute it, change its scarf.
+  * Words: type a line and the goats sing it, one syllable per chord (or
+    one per step in Arp to Bounce), every goat on the same syllable. The
+    word being sung lights up. "Words off" goes back to plain vowels and
+    keeps your line. "Say" makes the selected goat speak the line.
+    Saved MIDI carries the words as lyric events.
 
 RECORD A PROGRESSION AND PUT IT IN FL
   1. Press Rec and play strips. If FL is playing, each chord's length

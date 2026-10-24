@@ -4,7 +4,7 @@ using namespace juce;
 
 namespace gc {
 namespace {
-const int W = 1060, H = 812;
+const int W = 1060, H = 856;
 Font bold(float s) { return Font(s, Font::bold); }
 Colour rgb(uint32 c) { return Colour(0xff000000 | c); }
 float hash(int a, int b) { uint32 h = ((uint32)a * 73856093u) ^ ((uint32)b * 19349663u); h ^= h >> 13; h *= 0x5bd1e995; h ^= h >> 15; return (h & 0xffff) / 65535.0f; }
@@ -395,6 +395,36 @@ void Seg::paint(Graphics& g) {
     g.drawText(title.toUpperCase(), 2, 0, getWidth(), 14, Justification::left);
 }
 
+// ---------------- Words ----------------
+void WordsLine::paint(Graphics& g) {
+    g.setColour(col::panel); g.fillRoundedRectangle(getLocalBounds().toFloat(), 6);
+    const auto& list = proc.wordsList;
+    if (list.isEmpty()) {
+        g.setColour(col::dim); g.setFont(Font(12.5f));
+        g.drawText("one syllable per chord, or per step", getLocalBounds().reduced(10, 0), Justification::centredLeft);
+        return;
+    }
+    const int cur = proc.sungWord.load();
+    Font f = bold(14);
+    // keep the word being sung in view
+    float x = 0, curX = 0, curW = 0;
+    for (int k = 0; k < list.size(); ++k) {
+        const float w = f.getStringWidthFloat(list[k] + " ");
+        if (k == cur) { curX = x; curW = w; }
+        x += w;
+    }
+    const float inner = (float)getWidth() - 20, off = jmax(0.0f, curX + curW - inner);
+    g.reduceClipRegion(getLocalBounds().reduced(8, 0));
+    g.setFont(f);
+    x = 10 - off;
+    for (int k = 0; k < list.size(); ++k) {
+        const float w = f.getStringWidthFloat(list[k] + " ");
+        g.setColour(k == cur ? col::gold : proc.wordsOn ? col::ink : col::dim);
+        g.drawText(list[k], Rectangle<float>(x, 0, w + 4, (float)getHeight()), Justification::centredLeft);
+        x += w;
+    }
+}
+
 // ---------------- progression chips ----------------
 void Chips::refresh() {
     rects.clear();
@@ -574,7 +604,7 @@ GoatChoirEditor::GoatChoirEditor(GoatChoirProcessor& p)
       sing(p, "sing", "Sing"), style(p, "style", "Style"), vowel(p, "vowel", "Vowel"), chop(p, "chop", "Chop"),
       motionSync(p, "motionSync", "Sync"), motionLen(p, "motionLen", "Length"),
       curve(p), depthBar(p, "motionDepth", "Depth"), chanceBar(p, "motionChance", "Chance"),
-      chips(p), drag(p) {
+      chips(p), drag(p), wordsLine(p) {
     setLookAndFeel(&lnf);
     addAndMakeVisible(stage);
     stage.onSelect = [this] { refreshCard(); };
@@ -690,6 +720,28 @@ GoatChoirEditor::GoatChoirEditor(GoatChoirProcessor& p)
     addAndMakeVisible(chipsView);
     drag.say = [this](const String& s) { say(s); };
     addAndMakeVisible(drag);
+    // Words: typing a line turns them on; the button goes back to plain vowels and keeps the text
+    wordsBox.setTextToShowWhenEmpty("Type a line and the goats sing it", gc::col::dim);
+    wordsBox.setInputRestrictions(300);
+    wordsBox.setFont(Font(15.0f));
+    wordsBox.setIndents(8, 6);
+    wordsBox.setColour(TextEditor::backgroundColourId, gc::col::panel2);
+    wordsBox.setColour(TextEditor::textColourId, gc::col::ink);
+    wordsBox.setColour(TextEditor::outlineColourId, Colours::transparentBlack);
+    wordsBox.setColour(TextEditor::focusedOutlineColourId, gc::col::gold);
+    wordsBox.setColour(CaretComponent::caretColourId, gc::col::gold);
+    wordsBox.setText(proc.wordsText, false);
+    wordsBox.onTextChange = [this] { proc.setWords(wordsBox.getText(), true); refreshWords(); };
+    wordsOnBtn.setClickingTogglesState(false);
+    wordsOnBtn.onClick = [this] {
+        if (!proc.wordsOn && proc.wordsSyl.empty()) { say("Type a line first"); return; }
+        proc.setWords(proc.wordsText, !proc.wordsOn); refreshWords();
+    };
+    sayBtn.onClick = [this] { proc.uiSay(); };
+    sayBtn.setTooltip("The selected goat says the line");
+    for (Component* c : std::initializer_list<Component*>{&wordsBox, &wordsLine, &wordsOnBtn, &sayBtn}) addAndMakeVisible(*c);
+    refreshWords();
+
     status.setFont(Font(13.0f));
     status.setColour(Label::textColourId, gc::col::dim);
     addAndMakeVisible(status);
@@ -728,7 +780,17 @@ void GoatChoirEditor::refreshCard() {
     stage.repaint();
 }
 
+void GoatChoirEditor::refreshWords() {
+    wordsOnBtn.setButtonText(proc.wordsOn ? "Words on" : "Words off");
+    wordsOnBtn.setToggleState(proc.wordsOn, dontSendNotification);
+    if (!wordsBox.hasKeyboardFocus(true) && wordsBox.getText() != proc.wordsText) wordsBox.setText(proc.wordsText, false);
+    wordsLine.version = proc.wordsVersion;
+    wordsLine.repaint();
+}
+
 void GoatChoirEditor::timerCallback() {
+    if (wordsLine.version != proc.wordsVersion) refreshWords();
+    if (wordsLine.shown != proc.sungWord.load()) { wordsLine.shown = proc.sungWord.load(); wordsLine.repaint(); }
     const int key = proc.choice("key") * 100 + proc.choice("scale") * 10 + proc.choice("colour");
     if (key != seenKey) { seenKey = key; refreshLabels(); }
     const int cur = proc.currentChord.load();
@@ -785,12 +847,14 @@ void GoatChoirEditor::paint(Graphics& g) {
     g.drawText("STRUM", 14, 612, 70, 14, Justification::left);
     g.drawText("MOTION", 94, 612, 70, 14, Justification::left);
     g.drawText("SHAPES", 342, 612, 70, 14, Justification::left);
-    g.drawText("PROGRESSION", 14, 720, 120, 14, Justification::left);
+    g.drawText("WORDS", 14, 718, 60, 30, Justification::centredLeft);
+    g.drawText("PROGRESSION", 14, 764, 120, 14, Justification::left);
     g.setColour(gc::col::ink); g.setFont(gc::bold(16));
     g.drawText(String(goats), 42, 568, 68, 28, Justification::centred);
     g.setColour(gc::col::panel);
     g.fillRect(0, 604, getWidth(), 1);
     g.fillRect(0, 712, getWidth(), 1);
+    g.fillRect(0, 756, getWidth(), 1);
 }
 
 void GoatChoirEditor::resized() {
@@ -831,14 +895,19 @@ void GoatChoirEditor::resized() {
     depthBar.setBounds(926, 612, 56, 94);
     chanceBar.setBounds(990, 612, 58, 94);
 
-    recBtn.setBounds(120, 718, 64, 26);
-    playBtn.setBounds(190, 718, 64, 26);
-    undoBtn.setBounds(260, 718, 64, 26);
-    clearBtn.setBounds(330, 718, 64, 26);
-    status.setBounds(404, 718, 420, 26);
-    chipsView.setBounds(10, 752, 820, 54);
+    recBtn.setBounds(120, 762, 64, 26);
+    playBtn.setBounds(190, 762, 64, 26);
+    undoBtn.setBounds(260, 762, 64, 26);
+    clearBtn.setBounds(330, 762, 64, 26);
+    status.setBounds(404, 762, 420, 26);
+    chipsView.setBounds(10, 796, 820, 54);
     chips.refresh();
-    saveBtn.setBounds(842, 718, 206, 28);
-    drag.setBounds(842, 754, 206, 48);
+    saveBtn.setBounds(842, 762, 206, 28);
+    drag.setBounds(842, 798, 206, 48);
+
+    wordsBox.setBounds(74, 718, 470, 32);
+    wordsLine.setBounds(552, 718, 326, 32);
+    wordsOnBtn.setBounds(886, 718, 92, 32);
+    sayBtn.setBounds(984, 718, 64, 32);
 }
 

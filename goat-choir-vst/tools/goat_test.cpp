@@ -191,10 +191,57 @@ int main(int argc, char** argv) {
     check(r.peak > 0.05f && r.peak < 1.0f, "six goats stay under 0 dBFS");
     setParam(p, "goats", 4); setParam(p, "colour", 1); setParam(p, "vowel", 2); setParam(p, "style", 0);
 
+    std::cout << "Words: syllables from letter rules and the dictionary:\n";
+    {
+        const auto syl = goat::textToSyllables("Hello, we are the goat choir? Baking her cake");
+        std::cout << "  ";
+        for (auto& y : syl) {
+            std::cout << y.lyr << "[";
+            for (int j = 0; j < y.nOn; ++j) std::cout << y.on[j]->name << " ";
+            std::cout << (y.nu ? y.nu->name : "?");
+            for (int j = 0; j < y.nCo; ++j) std::cout << " " << y.co[j]->name;
+            std::cout << "] ";
+        }
+        std::cout << "\n";
+        check(syl.size() == 12, "12 syllables (" + String((int)syl.size()) + ")");
+        if (syl.size() == 12) {
+            check(String(syl[0].lyr) == "hello-" && String(syl[1].lyr) == "-" && syl[1].end == 0.2, "hello = hel-lo, then a comma pause");
+            check(syl[7].ask && syl[6].nu->name == "ay" && syl[7].nu->name == "er", "choir = k w ay / er, a question");
+            check(syl[10].nu->name == "eh" && syl[11].nu->name == "ey" && syl[11].nCo == 1, "letter rules: her = h eh r, cake = k ey k");
+        }
+    }
+    std::cout << "Words sung, one syllable per chord:\n";
+    host.playing = true;
+    p.setWords("la la love you", true);
+    r = render(p, host, sr, 16, strips({0, 2, 1, 7}, 4), dir.getChildFile("07_words_la_la_love_you.wav"));
+    check(r.peak > 0.05f && r.peak < 1.0f && r.midiOn == r.midiOff, "the words are sung, notes open and close");
+    check(p.sungWord.load() == 3, "the last chord sang word 4, you (" + String(p.sungWord.load()) + ")");
+    setParam(p, "style", goat::Pulse);
+    p.setWords("hallelujah sing it", true);
+    r = render(p, host, sr, 8, strips({0, 4}, 4), dir.getChildFile("08_words_pulse_hallelujah.wav"));
+    check(r.peak > 0.05f && r.peak < 1.0f, "pulse sings a syllable per step");
+    setParam(p, "style", 0);
+    p.setWords("la la love you", true);
+    {
+        const auto mid3 = dir.getChildFile("words.mid");
+        check(p.writeMidi(mid3), "export with Words on");
+        FileInputStream in(mid3); MidiFile mf; mf.readFrom(in);
+        StringArray lyr;
+        for (int t = 0; t < mf.getNumTracks(); ++t) for (auto* e : *mf.getTrack(t)) if (e->message.isMetaEvent() && e->message.getMetaEventType() == 5) lyr.add(e->message.getTextFromTextMetaEvent());
+        check(lyr.size() == (int)p.prog.size() && lyr.size() > 0 && lyr[0] == "la", "one lyric per chord in the file (" + lyr.joinIntoString(" ") + ")");
+    }
+    std::cout << "Say (the selected goat speaks the line):\n";
+    host.playing = false;
+    p.setWords("Hello. We are the goat choir?", true);
+    p.uiSay();
+    r = render(p, host, sr, 6, {}, dir.getChildFile("09_say_hello.wav"));
+    check(r.peak > 0.05f && r.peak < 1.0f && r.midiOn == 0, "Say talks (no MIDI notes)");
+
     std::cout << "State save and load:\n";
     MemoryBlock mb; p.getStateInformation(mb);
     GoatChoirProcessor q; q.setStateInformation(mb.getData(), (int)mb.getSize());
     check(q.prog.size() == p.prog.size() && q.choice("key") == p.choice("key"), "progression and settings come back");
+    check(q.wordsText == p.wordsText && q.wordsOn && q.wordsSyl.size() == p.wordsSyl.size(), "the Words line comes back");
 
     std::cout << "Editor snapshot:\n";
     host.playing = true;
