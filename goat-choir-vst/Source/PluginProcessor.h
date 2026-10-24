@@ -50,6 +50,10 @@ public:
     // the goats: voice type, mute and scarf per goat; the selected goat sings Solo
     std::array<std::atomic<int>, goat::kMaxGoats> voiceType;
     std::array<std::atomic<bool>, goat::kMaxGoats> muted;
+    std::array<std::atomic<int>, goat::kMaxGoats> sound;   // Voice, Opera, Whisper or an instrument
+    void uiBand();
+    bool isBand() const;
+    std::atomic<int> stageMode{0};   // Day, Sunset, Night (a spotlight follows the selected goat)
     std::array<int, goat::kMaxGoats> look{};
     std::atomic<int> selected{0};
 
@@ -57,6 +61,7 @@ public:
     std::array<std::atomic<float>, goat::kMaxGoats> goatLevel;
     std::array<std::atomic<int>, goat::kMaxGoats> goatNote;
     std::atomic<int> currentChord{-1}, progPos{-1};
+    std::atomic<double> progBeat{-1.0};
     std::atomic<double> hostBpm{140.0};
     std::atomic<bool> hostPlaying{false};
 
@@ -127,7 +132,7 @@ private:
     int stripKey = -1;
 
     juce::Reverb reverb;
-    double sr = 48000, compEnv = 0;
+    double sr = 48000, compEnv = 0, wetMul = 1;
     juce::LinearSmoothedValue<float> volume;
     juce::MidiBuffer midiOutBuf;
 

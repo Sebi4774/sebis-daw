@@ -22,10 +22,43 @@ inline const char* const kNames[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G"
 inline std::string noteName(int n) { return std::string(kNames[((n % 12) + 12) % 12]) + std::to_string(n / 12); }
 
 // ---------------- voices and cast ----------------
-struct VoiceType { const char* label; int lo, hi; double fs; };
-enum { Bass, Baritone, Tenor, Alto, Kid };
-inline const std::array<VoiceType, 5> kVoices{{
-    {"Bass", 38, 62, 0.86}, {"Baritone", 43, 67, 0.92}, {"Tenor", 48, 72, 1.0}, {"Alto", 53, 75, 1.12}, {"Kid", 60, 84, 1.28}}};
+// sex: 'm' male, 'f' female, 'k' kid; swap = the same part in the other voice (Male / Female). Mezzo and Soprano
+// come last so voice numbers saved by earlier versions still mean the same voice.
+struct VoiceType { const char* label; int lo, hi; double fs; char sex; int swap; };
+enum { Bass, Baritone, Tenor, Alto, Kid, Mezzo, Soprano, kVoiceTypes };
+inline const std::array<VoiceType, kVoiceTypes> kVoices{{
+    {"Bass", 38, 62, 0.86, 'm', Alto}, {"Baritone", 43, 67, 0.92, 'm', Mezzo}, {"Tenor", 48, 72, 1.0, 'm', Soprano},
+    {"Alto", 53, 75, 1.12, 'f', Bass}, {"Kid", 60, 84, 1.28, 'k', Soprano}, {"Mezzo", 56, 78, 1.16, 'f', Baritone},
+    {"Soprano", 60, 81, 1.2, 'f', Tenor}}};
+// a female voice is breathier and rounder at the source; a male one buzzes a little more
+struct SexInfo { double breath, vib; };
+inline SexInfo sexInfo(char sex) { return sex == 'm' ? SexInfo{0.012, 42} : sex == 'f' ? SexInfo{0.026, 36} : SexInfo{0.016, 40}; }
+// Male / Female for a goat: its partner voice, or Tenor / Soprano from a kid
+inline int swapVoice(int v, char to) {
+    const auto& V = kVoices[(size_t)v];
+    if (V.sex == to) return v;
+    if (to == 'f') return V.sex == 'm' ? V.swap : Soprano;
+    return V.sex == 'f' ? V.swap : Tenor;
+}
+
+// what each goat sounds like: three voices, or an instrument it holds and plays. All plain subtractive synthesis.
+// instruments: wave (0 saw, 1 triangle), filter sweep f0 -> f1 over fa then settling at f2, Q (dB, like WebAudio),
+// level, attack/release, vibrato (cents), body resonance (peak Hz, dB), breath hiss
+struct SoundDef { const char* label; bool inst, whisper; int wave; double f0, f1, f2, fa, q, gain, att, rel, vib, peakF, peakG, breath, lvl; };
+enum { SndVoice, SndOpera, SndWhisper, SndTrumpet, SndViolin, SndFlute, SndTuba, kSounds };
+inline const std::array<SoundDef, kSounds> kSoundDefs{{
+    {"Voice", false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+    {"Opera", false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 72, 0, 0, 0, 1.1},
+    {"Whisper", false, true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+    {"Trumpet", true, false, 0, 650, 3400, 2300, 0.05, 2.2, 0.55, 0.02, 0.07, 16, 1400, 4, 0, 1},
+    {"Violin", true, false, 0, 2600, 4800, 4200, 0.12, 0.7, 0.42, 0.09, 0.2, 26, 2900, 7, 0.006, 1},
+    {"Flute", true, false, 1, 1400, 2400, 1900, 0.05, 0.5, 0.9, 0.05, 0.12, 14, 1500, 0, 0.03, 1},
+    {"Tuba", true, false, 0, 380, 1050, 800, 0.06, 1.4, 0.75, 0.05, 0.12, 8, 300, 5, 0, 1}}};
+// the Band button hands out instruments by voice type
+inline int bandSound(int voice) {
+    static const int band[kVoiceTypes] = {SndTuba, SndViolin, SndTrumpet, SndFlute, SndTrumpet, SndViolin, SndFlute};
+    return band[std::clamp(voice, 0, kVoiceTypes - 1)];
+}
 
 struct Look { const char* name; uint32_t c; };
 inline const std::array<Look, 6> kLooks{{{"Red scarf", 0xc2382f}, {"Mustard scarf", 0xd9a530}, {"Teal scarf", 0x2f8f8a},
@@ -61,7 +94,8 @@ enum Style { Block, Strum, Down, Arp, ArpDown, Broken, Pulse, Bounce, kStyles };
 inline bool patterned(int style) { return style >= Arp; }
 constexpr int kScales[3][7] = {{0, 2, 3, 5, 7, 8, 10}, {0, 2, 3, 5, 7, 8, 11}, {0, 2, 4, 5, 7, 9, 11}};
 
-struct Chord { int rootPc = 0, n = 0, fn = 0; int iv[5]{}, pcs[5]{}; };
+// prefs: which notes the upper goats take first (set by a flavor), else the 3rd, 7th, 5th and 9th
+struct Chord { int rootPc = 0, n = 0, fn = 0; int iv[6]{}, pcs[6]{}; int prefs[5]{}, nPrefs = 0; };
 struct ChordLabel { std::string name, roman; };
 
 inline int chordFn(int deg) { return (deg == 0 || deg == 2 || deg == 5) ? Tonic : (deg == 1 || deg == 3) ? Pre : Dom; }
@@ -112,11 +146,48 @@ inline Chord colorChord(int root, int ext, int off, int shape, const char* roman
     return c;
 }
 
+// chord flavors: the same strips, recoloured (sus2, sus4, add9, 6 or 6/9, 11, 13). Only major, minor and dominant
+// shapes change; diminished chords stay as they are. full = the chord's root-position stack up to the 9th.
+enum Flavor { FlPlain, FlSus2, FlSus4, FlAdd9, Fl6, Fl11, Fl13, kFlavors };
+inline const char* const kFlavorNames[kFlavors] = {"Plain", "sus2", "sus4", "add9", "6", "11", "13"};
+inline void applyFlavor(Chord& ch, const int* full, int flavor, int ext, ChordLabel* lab) {
+    if (flavor == FlPlain || full[2] != 7 || (full[1] != 3 && full[1] != 4)) return;
+    const bool mn = full[1] == 3, has7 = ext >= 4, nine = ext >= 5;
+    const int sev = full[3]; const bool maj7 = sev == 11;
+    int iv[6], n = 0;
+    std::vector<int> pref;
+    std::string sfx;
+    auto add = [&](std::initializer_list<int> xs) { for (int x : xs) iv[n++] = x; };
+    if (flavor == FlSus2 || flavor == FlSus4) {
+        add({0, flavor == FlSus2 ? 2 : 5, 7});
+        if (has7) add({sev});
+        if (nine && flavor == FlSus4) add({14});
+        sfx = std::string(has7 ? (maj7 ? "maj7" : "7") : "") + (flavor == FlSus2 ? "sus2" : "sus4"); pref = {1, 3, 2, 4};
+    } else if (flavor == FlAdd9) { add({0, full[1], 7, 14}); sfx = std::string(mn ? "m" : "") + "add9"; pref = {1, 3, 2}; }
+    else if (flavor == Fl6) { add({0, full[1], 7, 9}); if (nine) add({14}); sfx = std::string(mn ? "m" : "") + (nine ? "6/9" : "6"); pref = {1, 3, 4, 2}; }
+    else if (flavor == Fl11) { add({0, full[1], 7, sev, 14, mn ? 17 : 18}); sfx = mn ? "m11" : maj7 ? "maj7(#11)" : "7(#11)"; pref = {1, 3, 5, 4, 2}; }
+    else { add({0, full[1], 7, sev, 14, 21}); sfx = mn ? "m13" : maj7 ? "maj13" : "13"; pref = {1, 3, 5, 4, 2}; }
+    ch.n = n;
+    for (int k = 0; k < n; ++k) { ch.iv[k] = iv[k]; ch.pcs[k] = (ch.rootPc + iv[k]) % 12; }
+    ch.nPrefs = 0;
+    for (int k : pref) if (k < n && ch.nPrefs < 5) ch.prefs[ch.nPrefs++] = ch.pcs[k];
+    if (lab) {
+        lab->name = std::string(kNames[ch.rootPc]) + sfx;
+        std::string r = lab->roman;
+        for (size_t at; (at = r.find("(9)")) != std::string::npos;) r.erase(at, 3);
+        r.erase(std::remove(r.begin(), r.end(), '7'), r.end());
+        lab->roman = r + " " + kFlavorNames[flavor];
+    }
+}
+
 // strips 1-8: the key's own chords (i iv vi vii v ii iii, then V with a major third); 9-16: borrowed and colour chords
-inline void buildChords(int root, int scale, int ext, std::array<Chord, kStrips>& out, std::array<ChordLabel, kStrips>* labs) {
+inline void buildChords(int root, int scale, int ext, std::array<Chord, kStrips>& out, std::array<ChordLabel, kStrips>* labs, int flavor = FlPlain) {
     static const int degs[7] = {0, 3, 5, 6, 4, 1, 2};
-    for (int i = 0; i < 7; ++i) out[i] = makeChord(root, scale, degs[i], ext, false, labs ? &(*labs)[i] : nullptr);
-    out[7] = makeChord(root, scale, 4, ext, true, labs ? &(*labs)[7] : nullptr);
+    for (int i = 0; i < 8; ++i) {
+        const int deg = i < 7 ? degs[i] : 4; const bool force = i == 7;
+        out[i] = makeChord(root, scale, deg, ext, force, labs ? &(*labs)[i] : nullptr);
+        applyFlavor(out[i], makeChord(root, scale, deg, 5, force, nullptr).iv, flavor, ext, labs ? &(*labs)[i] : nullptr);
+    }
     struct More { int off, shape; const char* roman; int fn, minN; };
     static const More major[8] = {{5, ShMin, "iv", Pre, 3}, {10, ShMaj, "bVII", Dom, 3}, {8, ShMaj, "bVI", Pre, 3},
                                   {3, ShMaj, "bIII", Tonic, 3}, {4, ShDom, "V/vi", Dom, 3}, {2, ShDom, "V/V", Dom, 3},
@@ -125,15 +196,18 @@ inline void buildChords(int root, int scale, int ext, std::array<Chord, kStrips>
                                   {11, ShDim7, "vii\xc2\xb0" "7", Dom, 4}, {2, ShDom, "V/V", Dom, 3}, {0, ShDom, "V/iv", Dom, 3},
                                   {0, ShMM7, "i(maj7)", Tonic, 4}, {6, ShDim7, "#iv\xc2\xb0" "7", Pre, 4}};
     const More* m = scale == Major ? major : minor;
-    for (int i = 0; i < 8; ++i)
+    static const int full[3][5] = {{0, 4, 7, 11, 14}, {0, 3, 7, 10, 14}, {0, 4, 7, 10, 14}};   // maj, min, dom
+    for (int i = 0; i < 8; ++i) {
         out[8 + i] = colorChord(root, ext, m[i].off, m[i].shape, m[i].roman, m[i].fn, m[i].minN, labs ? &(*labs)[8 + i] : nullptr);
+        if (m[i].shape <= ShDom) applyFlavor(out[8 + i], full[m[i].shape], flavor, ext, labs ? &(*labs)[8 + i] : nullptr);
+    }
 }
 
 // ---------------- voicing ----------------
 using Plan = std::array<int, kMaxGoats>;   // the note each goat sings, -1 = silent
 inline Plan emptyPlan() { Plan p; p.fill(-1); return p; }
 
-struct SingerInfo { int voice = Tenor; bool muted = false; int last = -1, lastTop = -1; };
+struct SingerInfo { int voice = Tenor, sound = SndVoice; bool muted = false; int last = -1, lastTop = -1; };
 
 inline int nearest(int pc, int voice, double target, int floor) {
     const auto& V = kVoices[voice];
@@ -164,8 +238,9 @@ inline Plan assignChord(const Chord& ch, std::array<SingerInfo, kMaxGoats>& sing
     const int na = activeOrder(singers, count, order);
     if (!na) return out;
     if (mode == Choir) {
-        int prefs[4], np = 0;
-        for (int idx : {1, 3, 2, 4}) if (idx < ch.n) prefs[np++] = ch.pcs[idx];
+        int prefs[5], np = 0;
+        if (ch.nPrefs) for (int p = 0; p < ch.nPrefs; ++p) prefs[np++] = ch.prefs[p];
+        else for (int idx : {1, 3, 2, 4}) if (idx < ch.n) prefs[np++] = ch.pcs[idx];
         int floor = 0, used[8], nu = 0;
         auto isUsed = [&](int pc) { for (int u = 0; u < nu; ++u) if (used[u] == pc) return true; return false; };
         for (int k = 0; k < na; ++k) {
@@ -175,7 +250,7 @@ inline Plan assignChord(const Chord& ch, std::array<SingerInfo, kMaxGoats>& sing
             int pick;
             if (k == 0) pick = nearest(ch.rootPc, s.voice, std::min(prev, V.lo + 7.0), 0);
             else {
-                int pool[5], npool = 0;
+                int pool[6], npool = 0;
                 for (int p = 0; p < np; ++p) if (!isUsed(prefs[p])) pool[npool++] = prefs[p];
                 if (!npool) for (int p = 0; p < ch.n; ++p) pool[npool++] = ch.pcs[p];
                 int bestN = -1, bestPc = -1; double bestCost = 1e9;
@@ -266,22 +341,26 @@ inline int sortedPlan(const Plan& p, std::pair<int, int>* out) {
 }
 
 // ---------------- DSP ----------------
-// The glottal-style wave of the original (harmonic k at k^-1.2), band-limited per octave so high goats don't alias
+// The glottal-style wave of the original, band-limited per octave so high goats don't alias. Three sources, each
+// normalised like a WebAudio PeriodicWave: normal (k^-1.2), soft for female voices (k^-1.5), bright for words (k^-0.78)
+enum Source { SrcNormal, SrcSoft, SrcBright };
 struct Wavetables {
-    static constexpr int N = 2048, T = 7;
+    static constexpr int N = 2048, T = 7, S = 3;
     static constexpr int H[T] = {47, 32, 22, 15, 10, 6, 3};
-    float tab[T][N + 1];
+    float tab[S][T][N + 1];
     Wavetables() {
-        double peak = 0;
-        for (int t = 0; t < T; ++t) {
-            for (int i = 0; i <= N; ++i) {
-                double v = 0;
-                for (int h = 1; h <= H[t]; ++h) v += std::pow(h, -1.2) * (1 - h / 48.0 * 0.5) * std::sin(2 * kPi * h * i / N);
-                tab[t][i] = (float)v;
-                if (t == 0) peak = std::max(peak, std::abs(v));
-            }
+        static const double ex[S] = {-1.2, -1.5, -0.78}, tilt[S] = {0.5, 0.6, 0.35};
+        for (int s = 0; s < S; ++s) {
+            double peak = 0;
+            for (int t = 0; t < T; ++t)
+                for (int i = 0; i <= N; ++i) {
+                    double v = 0;
+                    for (int h = 1; h <= H[t]; ++h) v += std::pow(h, ex[s]) * (1 - h / 48.0 * tilt[s]) * std::sin(2 * kPi * h * i / N);
+                    tab[s][t][i] = (float)v;
+                    if (t == 0) peak = std::max(peak, std::abs(v));
+                }
+            for (auto& row : tab[s]) for (auto& v : row) v = (float)(v / peak);
         }
-        for (auto& row : tab) for (auto& v : row) v = (float)(v / peak);
     }
     static const Wavetables& get() { static const Wavetables w; return w; }
     static int pick(double f, double sr) {
@@ -290,7 +369,6 @@ struct Wavetables {
         return T - 1;
     }
 };
-
 struct Biquad {
     double b0 = 0, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
     void bandpass(double f, double q, double sr) {   // constant 0 dB peak, the same as WebAudio's "bandpass"
@@ -301,6 +379,10 @@ struct Biquad {
         const double w = 2 * kPi * f / sr, al = std::sin(w) / (2 * q), cw = std::cos(w), a0 = 1 + al;
         b0 = (1 - cw) / 2 / a0; b1 = (1 - cw) / a0; b2 = b0; a1 = -2 * cw / a0; a2 = (1 - al) / a0;
     }
+    void peaking(double f, double q, double gainDb, double sr) {   // WebAudio's "peaking"
+        const double A = std::pow(10.0, gainDb / 40), w = 2 * kPi * std::min(f, sr * 0.49) / sr, al = std::sin(w) / (2 * q), cw = std::cos(w), a0 = 1 + al / A;
+        b0 = (1 + al * A) / a0; b1 = -2 * cw / a0; b2 = (1 - al * A) / a0; a1 = -2 * cw / a0; a2 = (1 - al / A) / a0;
+    }
     double process(double x) { const double y = b0 * x + z1; z1 = b1 * x - a1 * y + z2; z2 = b2 * x - a2 * y; return y; }
 };
 
@@ -308,26 +390,37 @@ inline double mtof(int n) { return 440.0 * std::pow(2.0, (n - 69) / 12.0); }
 
 inline double sylLevel(double n) { return 0.22 * (n < 45 ? 1.35 : n < 52 ? 1.15 : 1); }
 
-// One goat: wave -> amp -> five formant band-passes, plus a little breath noise. Each change glides the way
-// WebAudio's setTargetAtTime did in the app. With Words on, the consonants are timed changes (events) on this goat.
+// One goat: wave -> amp -> five formant band-passes, plus a little breath noise; or hiss through the same mouth
+// (Whisper); or its own instrument chain (saw or triangle -> swept low-pass -> body resonance). Each change glides the
+// way WebAudio's setTargetAtTime did in the app. With Words on, the consonants are timed changes (events) on this goat.
 struct Voice {
-    static constexpr double kFric = 0.22, kBreath = 0.012;
-    enum EvKind { EvAmp = 1, EvNg = 2, EvForm = 4, EvNf = 8, EvFreq = 16, EvVib = 32 };
+    static constexpr double kFric = 0.3, kBreath = 0.012;
+    static constexpr double kFGainSpeech[5] = {1.3, 1.45, 1.15, 0.78, 0.5};   // words: the upper formants lifted
+    enum EvKind { EvAmp = 1, EvNg = 2, EvForm = 4, EvNf = 8, EvFreq = 16, EvVib = 32, EvIlp = 64 };
     struct Ev { long long at; int kind; double v, v2, tau; const Ph* ph; bool useE; };
     double sr = 48000, phase = 0;
     double freq = 220, freqT = 220, freqC = 0;
     double amp = 0, ampT = 0, ampC = 0;
     double lfo = 0, lfoRate = 6.8;
-    int vibMode = 0; double vib = 0, vibT = 0, vib0 = 0, vib1 = 12, vibC = 0;
-    double ff[5]{}, ffT[5]{}, q[5]{}, ffC = 0; int ffDelay = 0, coefCount = 0, table = 0;
+    // vibrato: 1 = linear ramps through a few (time, cents) points from the note start, 2/3 = glide to vibTgt
+    int vibMode = 0; double vib = 0, vibT = 0, vibC = 0, vibTgt = 0; double vpT[4]{}, vpV[4]{}; int vpN = 0;
+    double ff[5]{}, ffT[5]{}, q[5]{}, qT[5]{}, ffC = 0, qC = 0; int ffDelay = 0, coefCount = 0, table = 0;
+    double fg[5]{}, fgT[5]{}, fgC = 1;   // formant gains: singing, or speech
+    int src = SrcNormal, baseSrc = SrcNormal; bool speech = false;
     Biquad bp[5], nbp;
     double ng = 0, ngT = 0, ngC = 0;
+    double wg = 0, wgT = 0, wgC = 0;   // Whisper
+    double breath = 0.012, vibEnd = 42;
+    // instrument
+    const SoundDef* snd = &kSoundDefs[SndVoice];
+    double iphase = 0, iFreq = 220, iFreqT = 220, iFreqC = 0, iamp = 0, iampT = 0, iampC = 0, ilpF = 1200, ilpT = 1200, ilpC = 0, ilpQ = 1;
+    Biquad ilp, ipk;
     uint32_t rng = 1;
     double gL = 0.7, gR = 0.7;
     bool singing = false; int note = -1;
     // Words
     std::vector<Ev> evs; size_t evHead = 0; long long clock = 0, sayEnd = -1;
-    double qT[5]{}, qC = 0, vibTgt = 0, fsNow = 1;
+    double fsNow = 1;
     const Ph* coda[Syl::kMaxCons]{}; int nCoda = 0; long long sylId = -1;
 
     double coef(double tau) const { return tau > 0 ? 1 - std::exp(-1 / (tau * sr)) : 1; }
@@ -336,9 +429,26 @@ struct Voice {
         const double x = (std::clamp(pan, -1.0f, 1.0f) + 1) / 2;
         gL = std::cos(x * kPi / 2); gR = std::sin(x * kPi / 2);
         nbp.bandpass(2600, 0.8, sr);
-        for (int i = 0; i < 5; ++i) { ff[i] = ffT[i] = kVowels[2].f[i]; q[i] = qT[i] = kVowels[2].f[i] / kVowels[2].b[i]; bp[i].bandpass(ff[i], q[i], sr); }
-        amp = ampT = ng = ngT = vib = 0; singing = false; note = -1; vibMode = 0;
+        for (int i = 0; i < 5; ++i) {
+            ff[i] = ffT[i] = kVowels[2].f[i]; q[i] = qT[i] = kVowels[2].f[i] / kVowels[2].b[i]; bp[i].bandpass(ff[i], q[i], sr);
+            fg[i] = fgT[i] = kFGain[i];
+        }
+        amp = ampT = ng = ngT = wg = wgT = iamp = iampT = vib = 0; singing = false; speech = false; src = baseSrc; note = -1; vibMode = 0;
+        ilp.lowpass(1200, 1, sr); ipk.peaking(1500, 1.2, 0, sr);
         evs.clear(); evs.reserve(8192); evHead = 0; clock = 0; sayEnd = -1; nCoda = 0; sylId = -1;
+    }
+    void setType(const VoiceType& V) {
+        baseSrc = V.sex == 'f' ? SrcSoft : SrcNormal;
+        if (!speech) src = baseSrc;
+        const auto si = sexInfo(V.sex);
+        breath = si.breath; vibEnd = si.vib;
+    }
+    // a goat changing its sound lets go quickly first
+    void setSound(int k) {
+        const auto* s = &kSoundDefs[(size_t)std::clamp(k, 0, kSounds - 1)];
+        if (s == snd) return;
+        if (singing) quiet(0.05);
+        snd = s;
     }
     void setFormants(int from, int to, double fs, bool jump) {
         const auto &A = kVowels[from], &B = kVowels[to];
@@ -348,38 +458,78 @@ struct Voice {
         }
         ffC = coef(0.09); ffDelay = jump ? (int)(0.03 * sr) : 0;
     }
-    // syl: the syllable to sing (Words on), id: which use of it, so a re-voiced chord keeps the word without new consonants
+    void vibRamp(double v0, std::initializer_list<std::pair<double, double>> pts) {
+        vibMode = 1; vibT = 0; vpN = 0;
+        vpT[vpN] = 0; vpV[vpN++] = v0;
+        for (auto& p : pts) if (vpN < 4) { vpT[vpN] = p.first; vpV[vpN++] = p.second; }
+    }
+    // words need a clearer voice than humming: brighter source, the upper formants lifted
+    void speechTone(bool on) {
+        if (speech == on) return;
+        speech = on; src = on ? SrcBright : baseSrc;
+        for (int i = 0; i < 5; ++i) fgT[i] = on ? kFGainSpeech[i] : kFGain[i];
+        fgC = coef(0.02);
+    }
+    // syl: the syllable to sing (Words on), id: which use of it, so a re-voiced chord keeps the word without new consonants;
     // shift: the Pitch knob in semitones; it moves the pitch only, so the vowels keep their colour
     void sing(int n, int vowel, double fs, const Syl* syl = nullptr, long long id = -1, int shift = 0) {
         const bool was = singing;
-        cancel(EvAmp | EvNg | EvForm | EvFreq | EvVib); sayEnd = -1;
+        cancel(EvAmp | EvNg | EvForm | EvFreq | EvVib | EvIlp); sayEnd = -1;
         const double f = mtof(n + shift);
         if (!was) freq = f * 0.985;
         freqT = f; freqC = coef(was ? 0.055 : 0.03);
-        ampT = 0.22 * (n < 45 ? 1.35 : n < 52 ? 1.15 : 1); ampC = coef(was ? 0.05 : 0.08);
-        vibMode = 1; vibT = 0; vib0 = was ? vib : 0; vib1 = was ? 30 : 12;
-        ngT = 0.012; ngC = coef(0.05);
+        ampT = sylLevel(n); ampC = coef(was ? 0.05 : 0.08);
+        vibRamp(was ? vib : 0, {{0.12, was ? 30 : 12}, {0.6, vibEnd}});
+        ngT = breath; ngC = coef(0.05);
         setFormants(was ? vowel : (vowel == 5 ? 5 : 0), vowel, fs, !was);
         fsNow = fs;
-        if (syl && syl->nu) {
-            const double L = sylLevel(n);
-            if (was && id == sylId) vowelAt(*syl->nu, 0, L);
-            else {
-                // what is left of the last word first (its final consonants), then this syllable's
-                double u = 0;
-                if (was) for (int j = 0; j < nCoda; ++j) u = phonAt(*coda[j], u, L, 0.8, syl->nu);
-                for (int j = 0; j < syl->nOn; ++j) u = phonAt(*syl->on[j], u, L, 0.8, syl->nu);
-                vowelAt(*syl->nu, u, L);
-            }
-            nCoda = syl->nCo;
-            for (int j = 0; j < nCoda; ++j) coda[j] = syl->co[j];
-            sylId = id;
-        } else { nCoda = 0; sylId = -1; }
+        const auto& S = *snd;
+        if (!S.inst) { iampT = 0; iampC = coef(0.03); }
+        if (!S.whisper) { wgT = 0; wgC = coef(0.03); }
+        if (S.inst) playInst(f, was, n);
+        else if (S.whisper) { ampT = 0; ampC = coef(0.02); wgT = 0.5 * (n < 50 ? 1.3 : 1); wgC = coef(0.06); nCoda = 0; sylId = -1; }
+        else {
+            if (S.vib > 0) { vibRamp(was ? vib : 0, {{0.12, was ? 30 : 12}, {0.6, vibEnd}, {0.7, S.vib}}); ampT = sylLevel(n) * S.lvl; }
+            if (syl && syl->nu) {
+                speechTone(true);
+                const double L = sylLevel(n);
+                if (was && id == sylId) vowelAt(*syl->nu, 0, L);
+                else {
+                    // what is left of the last word first (its final consonants), then this syllable's
+                    double u = 0;
+                    if (was) for (int j = 0; j < nCoda; ++j) u = phonAt(*coda[j], u, L, 0.8, syl->nu);
+                    for (int j = 0; j < syl->nOn; ++j) u = phonAt(*syl->on[j], u, L, 0.8, syl->nu);
+                    vowelAt(*syl->nu, u, L);
+                }
+                nCoda = syl->nCo;
+                for (int j = 0; j < nCoda; ++j) coda[j] = syl->co[j];
+                sylId = id;
+            } else { nCoda = 0; sylId = -1; speechTone(false); }
+        }
         singing = true; note = n;
+    }
+    // an instrument note: the goat's voice stays silent, the instrument chain plays
+    void playInst(double hz, bool was, int n) {
+        const auto& I = *snd;
+        ampT = 0; ampC = coef(0.01); wgT = 0; wgC = coef(0.02);
+        if (!was) iFreq = hz * 0.99;
+        iFreqT = hz; iFreqC = coef(was ? 0.04 : 0.015);
+        iampT = I.gain * (n < 45 ? 1.2 : 1); iampC = coef(was ? 0.04 : I.att);
+        ilpQ = std::pow(10.0, I.q / 20);
+        if (!was) ilpF = I.f0;
+        ilpT = I.f1; ilpC = coef(I.fa);
+        schedule(EvIlp, I.fa * 3, I.f2, 0.25);
+        ipk.peaking(I.peakF, 1.2, I.peakG, sr);
+        vibRamp(was ? vib : 0, {{0.45, I.vib}});
+        ngT = I.breath; ngC = coef(0.03);
+        if (I.breath > 0) nbp.bandpass(std::min(8000.0, hz * 2.5), 1.5, sr);
+        nCoda = 0; sylId = -1;
     }
     // let go; with Words on the goat finishes the word (its last consonants) first
     void quiet(double rel = 0.14) {
         if (!singing) return;
+        iampT = 0; iampC = coef(snd->inst ? std::min(rel, snd->rel) : 0.03);
+        wgT = 0; wgC = coef(0.08);
         cancel(EvAmp | EvNg | EvVib);
         double u = 0;
         if (nCoda) {
@@ -393,8 +543,14 @@ struct Voice {
         singing = false; sylId = -1;
     }
     // the Pitch knob moved: a singing goat glides to its new pitch
-    void retune(int shift) { if (singing && sayEnd < 0) { freqT = mtof(note + shift); freqC = coef(0.04); } }
-    bool idle() const { return !singing && amp < 1e-5 && ng < 1e-6 && evHead >= evs.size(); }
+    void retune(int shift) {
+        if (!singing || sayEnd >= 0) return;
+        freqT = mtof(note + shift); freqC = coef(0.04);
+        iFreqT = freqT; iFreqC = coef(0.04);
+    }
+    bool idle() const { return !singing && amp < 1e-5 && ng < 1e-6 && wg < 1e-6 && iamp < 1e-6 && evHead >= evs.size(); }
+    // how loud the goat is, 0..about 1, for drawing
+    double level() const { return std::max({amp / 0.22, wg / 0.5, iamp / 0.6}); }
 
     // ---- Words: timed changes, the app's setTargetAtTime calls; u is seconds from now ----
     void schedule(int kind, double u, double v, double tau, double v2 = 0, const Ph* ph = nullptr, bool useE = false) {
@@ -415,13 +571,15 @@ struct Voice {
             case EvNf: nbp.bandpass(e.v, e.v2, sr); break;
             case EvFreq: freqT = e.v; freqC = coef(e.tau); break;
             case EvVib: vibMode = 3; vibTgt = e.v; vibC = coef(e.tau); break;
+            case EvIlp: ilpT = e.v; ilpC = coef(e.tau); break;
             case EvForm:
+                // words use slightly wider bands than the sung vowels (Q = f / (b * 1.2)), so they read clearer
                 for (int i = 0; i < 5; ++i) {
                     if (e.useE && i >= 3) break;
                     const double f = i < 3 ? (e.useE ? e.ph->e[i] : e.ph->f[i]) : kVowels[2].f[i], b = i < 3 ? e.ph->b[i] : kVowels[2].b[i];
                     if (f <= 0) continue;
                     ffT[i] = f * fsNow;
-                    if (!e.useE) qT[i] = f / b;
+                    if (!e.useE) qT[i] = f / (b * 1.2);
                 }
                 ffC = coef(e.tau); if (!e.useE) qC = coef(e.tau);
                 ffDelay = 0;
@@ -439,7 +597,7 @@ struct Voice {
             schedule(EvAmp, u, L * p.av * 0.4, 0.008); schedule(EvNg, u, 0, 0.006);
             const double r = u + d * 0.6;
             schedule(EvNf, r, p.fh, 0, p.fh / p.fb);
-            schedule(EvNg, r, kFric * p.af * 1.4, 0.003); schedule(EvNg, r + 0.018, 0, 0.012);
+            schedule(EvNg, r, kFric * p.af * 1.5, 0.003); schedule(EvNg, r + 0.026, 0, 0.014);
         } else {
             schedule(EvAmp, u, L * p.av, 0.012);
             if (p.af > 0) schedule(EvNf, u, p.fh, 0, p.fh / p.fb);
@@ -457,6 +615,8 @@ struct Voice {
     void say(const Syl* syl, int n, const VoiceType& V, int shift = 0) {
         cancel(~0); nCoda = 0; sylId = -1;
         fsNow = V.fs;
+        speechTone(true);
+        iampT = 0; iampC = coef(0.02); wgT = 0; wgC = coef(0.02);
         const double base = (V.lo + V.hi) / 2.0 - 1 + shift, L = sylLevel(base - shift) * 1.5;
         schedule(EvVib, 0, 4, 0.05);
         amp = ampT = 0; ffDelay = 0;
@@ -472,17 +632,18 @@ struct Voice {
             const double hz = 440 * std::pow(2.0, (note - 69) / 12);
             if (i == 0) freq = freqT = hz;
             schedule(EvFreq, u, hz, 0.04);
-            for (int j = 0; j < x.nOn; ++j) u = phonAt(*x.on[j], u, L, 1.05, x.nu);
+            for (int j = 0; j < x.nOn; ++j) u = phonAt(*x.on[j], u, L, 1.2, x.nu);
             vowelAt(*x.nu, u, L);
-            u += std::max(0.09, x.nu->d * 1.25) + (x.end > 0.1 ? 0.08 : 0);
+            u += std::max(0.11, x.nu->d * 1.45) + (x.end > 0.1 ? 0.08 : 0);
             if (x.ask && x.end > 0) schedule(EvFreq, u - 0.12, hz * std::pow(2.0, 4 / 12.0), 0.05);
-            for (int j = 0; j < x.nCo; ++j) u = phonAt(*x.co[j], u, L, 1.05, nullptr);
+            for (int j = 0; j < x.nCo; ++j) u = phonAt(*x.co[j], u, L, 1.2, nullptr);
             if (x.end > 0) { schedule(EvAmp, u, x.end > 0.1 ? 0 : L * 0.4, 0.025); schedule(EvNg, u, 0, 0.02); u += x.end; }
         }
         schedule(EvAmp, u, 0, 0.04); schedule(EvNg, u, 0, 0.03); schedule(EvVib, u, 0, 0.1);
-        singing = true; note = (int)std::lround(base);
+        singing = true; note = (int)std::lround(base - shift);
         sayEnd = clock + (long long)((u + 0.12) * sr);
     }
+    bool saying() const { return sayEnd >= 0; }
     float noise() { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return (rng / 4294967295.0f) * 2.0f - 1.0f; }
 
     double tick(double extraCents) {
@@ -493,30 +654,53 @@ struct Voice {
         freq += (freqT - freq) * freqC;
         amp += (ampT - amp) * ampC;
         ng += (ngT - ng) * ngC;
+        wg += (wgT - wg) * wgC;
         if (vibMode == 1) {
             vibT += 1 / sr;
-            vib = vibT < 0.12 ? vib0 + (vib1 - vib0) * vibT / 0.12 : vibT < 0.6 ? vib1 + (42 - vib1) * (vibT - 0.12) / 0.48 : 42;
+            int i = 0;
+            while (i + 1 < vpN && vibT >= vpT[i + 1]) ++i;
+            vib = i + 1 < vpN ? vpV[i] + (vpV[i + 1] - vpV[i]) * (vibT - vpT[i]) / std::max(1e-9, vpT[i + 1] - vpT[i]) : vpV[vpN - 1];
         } else if (vibMode == 2) vib += (0 - vib) * vibC;
         else if (vibMode == 3) vib += (vibTgt - vib) * vibC;
         lfo += lfoRate / sr; if (lfo >= 1) lfo -= 1;
-        const double cents = std::sin(2 * kPi * lfo) * vib + extraCents;
-        const double f = freq * std::exp2(cents / 1200);
+        const double cents = std::sin(2 * kPi * lfo) * vib + extraCents, det = std::exp2(cents / 1200);
+        const double f = freq * det;
         phase += f / sr; if (phase >= 1) phase -= std::floor(phase);
         if (ffDelay > 0) --ffDelay;
         else for (int i = 0; i < 5; ++i) ff[i] += (ffT[i] - ff[i]) * ffC;
         if (qC > 0) for (int i = 0; i < 5; ++i) q[i] += (qT[i] - q[i]) * qC;
+        for (int i = 0; i < 5; ++i) fg[i] += (fgT[i] - fg[i]) * fgC;
+        const bool instOn = iamp > 1e-7 || iampT > 0;
         if (--coefCount <= 0) {
             coefCount = 16;
             for (int i = 0; i < 5; ++i) bp[i].bandpass(ff[i], q[i], sr);
             table = Wavetables::pick(f * 1.03, sr);
+            if (instOn) ilp.lowpass(std::min(ilpF, sr * 0.45), ilpQ, sr);
         }
         const auto& W = Wavetables::get();
         const double pos = phase * Wavetables::N;
         const int i0 = (int)pos; const double fr = pos - i0;
-        const double x = (W.tab[table][i0] + (W.tab[table][i0 + 1] - W.tab[table][i0]) * fr) * amp;
+        const float* tb = W.tab[src][table];
+        const double hiss = noise();
+        const double x = (tb[i0] + (tb[i0 + 1] - tb[i0]) * fr) * amp + hiss * wg;
         double y = 0;
-        for (int i = 0; i < 5; ++i) y += bp[i].process(x) * kFGain[i] * 7;
-        y += nbp.process(noise()) * ng;
+        for (int i = 0; i < 5; ++i) y += bp[i].process(x) * fg[i] * 7;
+        y += nbp.process(hiss) * ng;
+        if (instOn) {
+            iamp += (iampT - iamp) * iampC;
+            iFreq += (iFreqT - iFreq) * iFreqC;
+            ilpF += (ilpT - ilpF) * ilpC;
+            const double fi = iFreq * det, dt = fi / sr;
+            iphase += dt; if (iphase >= 1) iphase -= std::floor(iphase);
+            double o;
+            if (snd->wave == 1) o = 4 * std::abs(iphase - 0.5) - 1;   // triangle
+            else {
+                o = 2 * iphase - 1;   // saw with a polyBLEP edge
+                if (iphase < dt) { const double t = iphase / dt; o -= t + t - t * t - 1; }
+                else if (iphase > 1 - dt) { const double t = (iphase - 1) / dt; o -= t * t + t + t + 1; }
+            }
+            y += ipk.process(ilp.process(o)) * iamp;
+        }
         return y;
     }
 };
@@ -589,6 +773,7 @@ class ChoirEngine {
 public:
     // settings, written by the owner before each block
     int root = 3, scale = Minor, ext = 4, mode = Choir, style = Block, vowel = 2, chop = 0, count = 4, sel = 0;
+    int flavor = FlPlain;
     int pitch = 0;   // Pitch knob, -12..+12 semitones on everything the goats sing (set it with setPitch)
     double bpm = 140, beatPos = 0;
     bool hostPlaying = false;
@@ -603,6 +788,7 @@ public:
     int current = -1;
     // progression player
     std::array<ProgItem, kMaxProg> prog; int progN = 0; bool progPlaying = false; double progOrigin = 0; int progPos = -1;
+    double progBeat = -1;   // where the player is, in beats from the progression's start (for the note graph)
     // Words: the line the goats sing, one syllable per chord (or per step); lastWord = the word being sung, for the editor
     std::array<Syl, kMaxSyl> words; int nWords = 0; bool wordsOn = false; int lastWord = -1;
     std::array<Syl, kMaxSyl> sayBuf; int nSay = 0;
@@ -614,15 +800,28 @@ public:
     }
     void prepare(double rate) {
         sr = rate;
-        for (int k = 0; k < kMaxGoats; ++k) voices[k].prepare(sr, 0x9E3779B9u * (k + 1), kCast[k].pan, 6.4 + 1.2 * ((k * 37) % 10) / 10.0);
+        for (int k = 0; k < kMaxGoats; ++k) {
+            voices[k].setType(kVoices[(size_t)singers[k].voice]);
+            voices[k].prepare(sr, 0x9E3779B9u * (k + 1), kCast[k].pan, 6.4 + 1.2 * ((k * 37) % 10) / 10.0);
+            voices[k].snd = &kSoundDefs[(size_t)singers[k].sound];
+        }
         chopLp.lowpass(70, 1.122, sr);
         chopC = 1 - std::exp(-1 / (0.03 * sr));
         motionC = 1 - std::exp(-1 / (0.006 * sr));
         sounding.fill(-1); noteRef.fill(0); pend.fill({-1, 0});
         arpOn = false; current = -1;
     }
-    void rebuild() { buildChords(root, scale, ext, chords, nullptr); builtKey = root * 100 + scale * 10 + ext; }
-    void rebuildIfNeeded() { if (builtKey != root * 100 + scale * 10 + ext) { stopAll(); rebuild(); } }
+    int chordKey() const { return ((root * 3 + scale) * 8 + ext) * kFlavors + flavor; }
+    void rebuild() { buildChords(root, scale, ext, chords, nullptr, flavor); builtKey = chordKey(); }
+    // a new key or colour stops the choir; a new flavor re-sings the chord that is sounding, like the app
+    void rebuildIfNeeded() {
+        if (builtKey == chordKey()) return;
+        const bool flavorOnly = builtKey % kFlavors != flavor && builtKey / kFlavors == chordKey() / kFlavors;
+        const int c = current;
+        if (!flavorOnly) stopAll();
+        rebuild();
+        if (flavorOnly && c >= 0 && !progPlaying) playPlan(assignChord(chords[(size_t)c], singers, count, mode, sel), c, false, true);
+    }
 
     void setVowel(int v) {
         if (v == vowel) return;
@@ -649,7 +848,21 @@ public:
         for (int k = c; k < kMaxGoats; ++k) quietGoat(k);
     }
     void setMuted(int k, bool m) { if (singers[k].muted == m) return; singers[k].muted = m; if (m) quietGoat(k); }
-    void setVoiceType(int k, int v) { if (singers[k].voice == v) return; singers[k].voice = v; singers[k].last = -1; }
+    void setVoiceType(int k, int v) {
+        v = std::clamp(v, 0, kVoiceTypes - 1);
+        if (singers[k].voice == v) return;
+        singers[k].voice = v; singers[k].last = -1;
+        voices[k].setType(kVoices[(size_t)v]);
+    }
+    void setSound(int k, int snd) {
+        snd = std::clamp(snd, 0, kSounds - 1);
+        if (singers[k].sound == snd) return;
+        singers[k].sound = snd;
+        if (voices[k].singing && sounding[k] >= 0) { noteOff(sounding[k]); sounding[k] = -1; }
+        voices[k].setSound(snd);
+    }
+    // a goat is speaking (Say): the room dips so the echo doesn't smear the consonants
+    bool speaking() const { for (auto& v : voices) if (v.saying()) return true; return false; }
 
     void playChord(int idx) {
         if (idx < 0 || idx >= kStrips) return;
@@ -795,6 +1008,7 @@ private:
         if (total <= 0) return;
         double pos = std::fmod(beatPos - (hostPlaying ? 0.0 : progOrigin), total);
         if (pos < 0) pos += total;
+        progBeat = pos;
         int idx = 0; double acc = 0;
         for (; idx < progN - 1; ++idx) { acc += prog[idx].bars * 4; if (pos < acc - 1e-9) break; }
         if (idx != progPos) { progPos = idx; playPlan(prog[idx].notes, prog[idx].chord, false, true); }
@@ -803,6 +1017,26 @@ private:
 
 // ---------------- MIDI file: exactly what the choir sang, one track, 96 ticks per beat ----------------
 struct ExportItem { Plan notes; double bars; };
+// the notes of one recorded chord in time, the way the choir sings it in a style: start and end in beats from the
+// chord's start, the goat that sings it, and the step (stepped styles; 0 otherwise). strum = gap between goats in beats.
+struct NoteSpan { int note; double a, b; int goat, step; };
+inline void itemNotes(const Plan& notes, double bars, int style, double strum, std::vector<NoteSpan>& out) {
+    const double len = bars * 4;
+    std::pair<int, int> seq[kMaxGoats];
+    const int n = sortedPlan(notes, seq);
+    if (patterned(style)) {
+        Pattern P;
+        buildPattern(style, seq, n, P);
+        for (int k = 0; P.n && k * 0.5 < len - 1e-6; ++k) {
+            const int si = k % P.n;
+            for (int j = 0; j < P.size[si]; ++j)
+                out.push_back({P.step[si][j].second, k * 0.5, std::min(len, (k + P.gate) * 0.5), P.step[si][j].first, k});
+        }
+        return;
+    }
+    if (style != Strum && style != Down) strum = 0;
+    for (int j = 0; j < n; ++j) out.push_back({seq[j].second, (style == Down ? n - 1 - j : j) * strum, len, seq[j].first, 0});
+}
 // strum = the Strum knob; motion (if on) is written as CC11 (expression) every 1/8 beat so the DAW plays the same swell
 // syl (Words on): one lyric event (FF 05) per syllable, at its chord or step
 inline std::vector<uint8_t> midiFile(const std::vector<ExportItem>& items, double tempo, int style, double strumAmt, const Motion* motion,
@@ -823,35 +1057,20 @@ inline std::vector<uint8_t> midiFile(const std::vector<ExportItem>& items, doubl
     int ci = 0;
     auto lyric = [&](double beat) { if (syl && nSyl > 0) ev.push_back({std::lround(beat * PPQ), 3, ci++ % nSyl}); };
     const double strum = style == Strum || style == Down ? strumAmt * 0.3 : 0;   // in beats
+    std::vector<NoteSpan> spans;
     for (auto& it : items) {
-        const double len = it.bars * 4;
-        std::pair<int, int> seq[kMaxGoats];
-        const int n = sortedPlan(it.notes, seq);
-        if (patterned(style)) {
-            // stepped styles keep doubled notes (pulse and bounce sing every goat)
-            Pattern P;
-            buildPattern(style, seq, n, P);
-            for (int k = 0; P.n && k * 0.5 < len - 1e-6; ++k) {
-                const int si = k % P.n;
-                if (P.size[si]) lyric(start + k * 0.5);
-                for (int j = 0; j < P.size[si]; ++j) {
-                    const int nn = P.step[si][j].second;
-                    ev.push_back({std::lround((start + k * 0.5) * PPQ), 1, nn});
-                    ev.push_back({std::lround((start + std::min(len, (k + P.gate) * 0.5)) * PPQ), 0, nn});
-                }
-            }
-        } else {
-            if (n) lyric(start);
-            bool seen[128] = {};
-            int u[kMaxGoats], nu = 0;
-            for (int j = 0; j < n; ++j) if (!seen[seq[j].second]) { seen[seq[j].second] = true; u[nu++] = seq[j].second; }
-            for (int j = 0; j < nu; ++j) {
-                const int pos = style == Down ? nu - 1 - j : j;
-                ev.push_back({std::lround((start + pos * strum) * PPQ), 1, u[j]});
-                ev.push_back({std::lround((start + len) * PPQ), 0, u[j]});
-            }
+        spans.clear();
+        itemNotes(it.notes, it.bars, style, strum, spans);
+        bool seen[128] = {};
+        int lastStep = -1;
+        for (auto& sp : spans) {
+            if (sp.step != lastStep) { lastStep = sp.step; lyric(start + (patterned(style) ? sp.a : 0)); }
+            // stepped styles keep doubled notes (pulse and bounce sing every goat); the others sing each pitch once
+            if (!patterned(style)) { if (seen[sp.note]) continue; seen[sp.note] = true; }
+            ev.push_back({std::lround((start + sp.a) * PPQ), 1, sp.note});
+            ev.push_back({std::lround((start + sp.b) * PPQ), 0, sp.note});
         }
-        start += len;
+        start += it.bars * 4;
     }
     if (motion && motion->on) {
         std::vector<double> anchors; double a = 0;

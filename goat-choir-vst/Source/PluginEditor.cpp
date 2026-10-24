@@ -4,7 +4,7 @@ using namespace juce;
 
 namespace gc {
 namespace {
-const int W = 1060, H = 856;
+const int W = 1060, H = 960;
 Font bold(float s) { return Font(s, Font::bold); }
 Colour rgb(uint32 c) { return Colour(0xff000000 | c); }
 float hash(int a, int b) { uint32 h = ((uint32)a * 73856093u) ^ ((uint32)b * 19349663u); h ^= h >> 13; h *= 0x5bd1e995; h ^= h >> 15; return (h & 0xffff) / 65535.0f; }
@@ -106,15 +106,35 @@ void LnF::drawRotarySlider(Graphics& g, int x, int y, int w, int h, float pos, f
 // ---------------- stage ----------------
 Stage::Stage(GoatChoirProcessor& p) : proc(p) { startTimerHz(12); }
 
-void Stage::drawBackground(Graphics& g, Rectangle<float> r) {
+// mode: 0 day, 1 sunset, 2 night. The land is tinted toward the light of the hour.
+void Stage::drawBackground(Graphics& g, Rectangle<float> r, int mode) {
     const float w = r.getWidth(), h = r.getHeight();
-    g.setGradientFill(ColourGradient(Colour(0xff7fbfea), 0, 0, Colour(0xffd9eef3), 0, h * 0.62f, false));
+    static const uint32 skyTop[3] = {0x7fbfea, 0xe58a6a, 0x0f1a33}, skyLow[3] = {0xd9eef3, 0xf6c79c, 0x24335a};
+    static const uint32 tintC[3] = {0xffffff, 0xd9774a, 0x101a38};
+    static const float tintA[3] = {0, 0.22f, 0.62f};
+    auto T = [mode](Colour c) { return c.interpolatedWith(rgb(tintC[mode]), tintA[mode]); };
+    auto rgbT = [&](uint32 c) { return T(rgb(c)); };
+    g.setGradientFill(ColourGradient(rgb(skyTop[mode]), 0, 0, rgb(skyLow[mode]), 0, h * 0.62f, false));
     g.fillRect(r);
-    // sun
-    g.setGradientFill(ColourGradient(Colour(0xfffff1c9), w * 0.16f, h * 0.2f, Colour(0x00fff1c9), w * 0.16f + h * 0.32f, h * 0.2f, true));
-    g.fillEllipse(w * 0.16f - h * 0.32f, h * 0.2f - h * 0.32f, h * 0.64f, h * 0.64f);
-    g.setColour(Colour(0xfffff3d2));
-    g.fillEllipse(w * 0.16f - h * 0.06f, h * 0.2f - h * 0.06f, h * 0.12f, h * 0.12f);
+    if (mode == 2) {
+        // stars and the moon
+        for (int i = 0; i < 90; ++i) {
+            const float x = w * hash(i, 21), y = h * 0.55f * hash(i, 22), s = 0.8f + 1.6f * hash(i, 23);
+            g.setColour(Colours::white.withAlpha(0.35f + 0.6f * hash(i, 24))); g.fillEllipse(x, y, s, s);
+        }
+        g.setGradientFill(ColourGradient(Colour(0x55dfe6ff), w * 0.82f, h * 0.18f, Colour(0x00dfe6ff), w * 0.82f + h * 0.22f, h * 0.18f, true));
+        g.fillEllipse(w * 0.82f - h * 0.22f, h * 0.18f - h * 0.22f, h * 0.44f, h * 0.44f);
+        g.setColour(Colour(0xfff3f1e4)); g.fillEllipse(w * 0.82f - h * 0.07f, h * 0.18f - h * 0.07f, h * 0.14f, h * 0.14f);
+        g.setColour(Colour(0xffd9d5c4)); g.fillEllipse(w * 0.82f - h * 0.02f, h * 0.18f - h * 0.035f, h * 0.035f, h * 0.03f);
+    } else {
+        // the sun: high in the day, low and orange at sunset
+        const float sx = mode == 0 ? 0.16f : 0.74f, sy = mode == 0 ? 0.2f : 0.4f;
+        const Colour glow = mode == 0 ? Colour(0xfffff1c9) : Colour(0xffffc27a), disc = mode == 0 ? Colour(0xfffff3d2) : Colour(0xffffd9a0);
+        g.setGradientFill(ColourGradient(glow, w * sx, h * sy, glow.withAlpha(0.0f), w * sx + h * 0.32f, h * sy, true));
+        g.fillEllipse(w * sx - h * 0.32f, h * sy - h * 0.32f, h * 0.64f, h * 0.64f);
+        g.setColour(disc);
+        g.fillEllipse(w * sx - h * 0.06f, h * sy - h * 0.06f, h * 0.12f, h * 0.12f);
+    }
     // three rows of rounded clay hills, far to near, with pines on the first two
     struct Row { float base, amp, f1, f2, ph; uint32 c; int trees; };
     const Row rows[3] = {{0.5f, 0.12f, 2.1f, 5.3f, 0.4f, 0x8dbb6e, 9}, {0.6f, 0.1f, 2.9f, 6.1f, 2.2f, 0x6ea64c, 7}, {0.7f, 0.07f, 3.7f, 8.2f, 4.1f, 0x5b973a, 0}};
@@ -125,13 +145,13 @@ void Stage::drawBackground(Graphics& g, Rectangle<float> r) {
         p.startNewSubPath(0, h);
         for (float x = 0; x <= w + 8; x += 8) p.lineTo(x, yAt(x));
         p.lineTo(w, h); p.closeSubPath();
-        const Colour c = rgb(row.c);
+        const Colour c = rgbT(row.c);
         g.setGradientFill(ColourGradient(c.brighter(0.12f), 0, h * (row.base - row.amp), c.darker(0.12f), 0, h, false));
         g.fillPath(p);
         for (int t = 0; t < row.trees; ++t) {
             const float x = w * (0.04f + 0.92f * hash(ri * 31 + t, 7)), y = yAt(x) + 4, s = h * (ri == 0 ? 0.045f : 0.065f) * (0.8f + 0.4f * hash(t, ri));
-            const Colour tc = rgb(ri == 0 ? 0x4f7f3d : 0x3d6e2f);
-            g.setColour(Colour(0xff5a4632)); g.fillRect(x - s * 0.06f, y - s * 0.3f, s * 0.12f, s * 0.3f);
+            const Colour tc = rgbT(ri == 0 ? 0x4f7f3d : 0x3d6e2f);
+            g.setColour(rgbT(0x5a4632)); g.fillRect(x - s * 0.06f, y - s * 0.3f, s * 0.12f, s * 0.3f);
             for (int l = 0; l < 3; ++l) {
                 Path tri;
                 const float ty = y - s * 0.25f - l * s * 0.32f, tw = s * (0.55f - l * 0.12f);
@@ -143,22 +163,22 @@ void Stage::drawBackground(Graphics& g, Rectangle<float> r) {
     }
     // the grassy ledge the goats stand on
     Rectangle<float> ledge(-w * 0.1f, h * 0.74f, w * 1.2f, h * 0.6f);
-    g.setGradientFill(ColourGradient(Colour(0xff6cab42), 0, h * 0.74f, Colour(0xff4c8a2f), 0, h, false));
+    g.setGradientFill(ColourGradient(rgbT(0x6cab42), 0, h * 0.74f, rgbT(0x4c8a2f), 0, h, false));
     g.fillEllipse(ledge);
     for (int i = 0; i < 70; ++i) {
         const float x = w * hash(i, 3), y = h * (0.79f + 0.2f * hash(i, 5));
         if (hash(i, 9) < 0.55f) {
-            g.setColour(Colour(0xff4a8a2e).brighter(0.1f * hash(i, 4)));
+            g.setColour(rgbT(0x4a8a2e).brighter(0.1f * hash(i, 4)));
             Path tuft; tuft.addTriangle(x - 3, y, x + 3, y, x + (hash(i, 6) - 0.5f) * 4, y - 7 - 6 * hash(i, 2));
             g.fillPath(tuft);
         } else {
             static const uint32 petals[4] = {0xfff1a8, 0xffb3c8, 0xffffff, 0xc9b6ff};
-            const Colour pc = rgb(petals[i % 4]);
+            const Colour pc = rgbT(petals[i % 4]);
             for (int k = 0; k < 5; ++k) {
                 const float a = k * MathConstants<float>::twoPi / 5;
                 g.setColour(pc); g.fillEllipse(x + std::cos(a) * 3 - 2.2f, y + std::sin(a) * 3 - 2.2f, 4.4f, 4.4f);
             }
-            g.setColour(Colour(0xffe8b33a)); g.fillEllipse(x - 1.8f, y - 1.8f, 3.6f, 3.6f);
+            g.setColour(rgbT(0xe8b33a)); g.fillEllipse(x - 1.8f, y - 1.8f, 3.6f, 3.6f);
         }
     }
 }
@@ -170,7 +190,9 @@ void Stage::drawGoat(Graphics& g, int k, float cx, float gy, float u, int idx) {
     const float lvl = jlimit(0.0f, 1.2f, proc.goatLevel[(size_t)k].load());
     const bool singing = proc.goatNote[(size_t)k].load() >= 0, muted = proc.muted[(size_t)k].load();
     const auto& vw = goat::kVowels[(size_t)proc.choice("vowel")];
-    const float jaw = jlimit(0.0f, 1.0f, lvl * (0.25f + 0.75f * vw.open) * (0.8f + 0.2f * std::sin(t * 9 + k)));
+    const int snd = proc.sound[(size_t)k].load();
+    float jaw = jlimit(0.0f, 1.0f, lvl * (0.25f + 0.75f * vw.open) * (0.8f + 0.2f * std::sin(t * 9 + k)));
+    if (snd == goat::SndTrumpet || snd == goat::SndFlute) jaw = jmin(jaw, 0.06f);   // lips on the mouthpiece
     const float beat = (float)proc.hostBpm.load() / 60.0f;
     const float bob = singing ? std::abs(std::sin(t * MathConstants<float>::pi * beat)) * u * 0.035f : std::sin(t * 1.3f + k) * u * 0.006f;
     const float tilt = singing ? std::sin(t * 1.7f + k * 1.3f) * 0.08f : std::sin(t * 0.6f + k) * 0.02f;
@@ -250,6 +272,7 @@ void Stage::drawGoat(Graphics& g, int k, float cx, float gy, float u, int idx) {
     g.setColour(Colour(0xff3a1a1f)); g.fillEllipse(E(0, 0.79f - 0.02f * jaw, mw, mh));
     if (jaw > 0.2f) { g.setColour(Colour(0xffd96f80)); g.fillEllipse(E(0, 0.79f - 0.02f * jaw - mh * 0.22f, mw * 0.6f, mh * 0.4f)); }
     g.setColour(Colour(0xff2e2a2a)); g.fillEllipse(E(0, 0.855f, 0.065f, 0.028f));   // nose
+    if (goat::kSoundDefs[(size_t)snd].inst) drawInstrument(g, snd, P, u, lvl, t);
     }
 
     // the note above the head, the name under the feet
@@ -264,27 +287,82 @@ void Stage::drawGoat(Graphics& g, int k, float cx, float gy, float u, int idx) {
         g.setColour(col::ink); g.drawText(s, Rectangle<float>(tw, 20).withCentre(lp), Justification::centred);
     }
     g.setFont(bold(12));
-    g.setColour(muted ? Colour(0xff3a3340) : Colour(0xff1f3a17));
+    g.setColour(proc.stageMode.load() == 2 ? Colour(0xffc9cfe6).withAlpha(muted ? 0.5f : 0.85f) : muted ? Colour(0xff3a3340) : Colour(0xff1f3a17));
     g.drawText(String(cm.name) + (muted ? " (muted)" : ""), Rectangle<float>(u, 16).withCentre({cx, gy + 14}), Justification::centred);
     hit[(size_t)k] = Rectangle<float>(cx - u * 0.3f, gy - u * 1.15f, u * 0.6f, u * 1.2f);
 }
 
+// the instrument a goat holds and plays: clay trumpet, flute, violin and bow, tuba
+void Stage::drawInstrument(Graphics& g, int snd, std::function<Point<float>(float, float)> P, float u, float lvl, float t) {
+    const Colour gold(0xffe2b548), silver(0xffd9dde3), wood(0xff9a4f22), woodDark(0xff3a2116);
+    const float pulse = 1 + 0.06f * jmin(1.0f, lvl) * (0.5f + 0.5f * std::sin(t * 6.5f));
+    auto tube = [&](Point<float> a, Point<float> b, float wd, Colour c) {
+        Path p; p.startNewSubPath(a); p.lineTo(b);
+        g.setColour(c.darker(0.25f)); g.strokePath(p, PathStrokeType(wd + 1.5f, PathStrokeType::curved, PathStrokeType::rounded));
+        g.setColour(c); g.strokePath(p, PathStrokeType(wd, PathStrokeType::curved, PathStrokeType::rounded));
+    };
+    if (snd == goat::SndTrumpet) {
+        // from the lips out and down to the goat's left, bell toward the audience
+        tube(P(0.0f, 0.79f), P(0.3f, 0.63f), u * 0.035f, gold);
+        tube(P(0.08f, 0.71f), P(0.24f, 0.62f), u * 0.025f, gold);
+        for (int v = 0; v < 3; ++v) tube(P(0.1f + v * 0.045f, 0.75f - v * 0.024f), P(0.1f + v * 0.045f, 0.8f - v * 0.024f), u * 0.018f, silver);
+        const auto bell = P(0.33f, 0.61f);
+        const float bw = u * 0.15f * pulse, bh = u * 0.17f * pulse;
+        clayEllipse(g, Rectangle<float>(bw, bh).withCentre(bell), gold);
+        g.setColour(gold.darker(0.5f)); g.fillEllipse(Rectangle<float>(bw * 0.55f, bh * 0.55f).withCentre(bell));
+    } else if (snd == goat::SndFlute) {
+        // sideways at the mouth, out to the goat's left
+        tube(P(-0.06f, 0.785f), P(0.5f, 0.755f), u * 0.03f, silver);
+        for (int k = 0; k < 6; ++k) { g.setColour(silver.darker(0.35f)); g.fillEllipse(Rectangle<float>(u * 0.022f, u * 0.022f).withCentre(P(0.16f + k * 0.055f, 0.778f - k * 0.003f))); }
+    } else if (snd == goat::SndViolin) {
+        // under the chin on the goat's right shoulder, the bow sawing across
+        Graphics::ScopedSaveState ss(g);
+        const auto c = P(-0.17f, 0.64f);
+        g.addTransform(AffineTransform::rotation(0.75f, c.x, c.y));
+        clayEllipse(g, Rectangle<float>(u * 0.17f, u * 0.13f).withCentre(c.translated(u * 0.03f, 0)), wood);
+        clayEllipse(g, Rectangle<float>(u * 0.12f, u * 0.1f).withCentre(c.translated(-u * 0.09f, 0)), wood);
+        g.setColour(woodDark); g.fillRect(Rectangle<float>(u * 0.22f, u * 0.025f).withCentre(c.translated(-u * 0.22f, 0)));
+        g.fillEllipse(Rectangle<float>(u * 0.05f, u * 0.04f).withCentre(c.translated(-u * 0.34f, 0)));
+        g.setColour(woodDark.withAlpha(0.8f));
+        for (float sy : {-1.0f, 1.0f}) g.fillRoundedRectangle(Rectangle<float>(u * 0.01f, u * 0.035f).withCentre(c.translated(u * 0.01f, sy * u * 0.03f)), 2);
+        const float saw = std::sin(t * 6.5f * 0.55f) * 0.1f * jmin(1.0f, lvl);
+        Path bow; bow.startNewSubPath(c.translated(u * (0.05f + saw) - u * 0.02f, -u * 0.25f)); bow.lineTo(c.translated(u * (0.05f + saw) + u * 0.02f, u * 0.25f));
+        g.setColour(woodDark); g.strokePath(bow, PathStrokeType(u * 0.012f));
+        g.setColour(Colour(0xfff3ead8)); g.strokePath(bow, PathStrokeType(u * 0.005f), AffineTransform::translation(u * 0.012f, 0));
+    } else if (snd == goat::SndTuba) {
+        // a big gold coil in front of the belly, the bell up over the goat's left shoulder
+        const auto c = P(0.0f, 0.42f);
+        Path coil; coil.addEllipse(Rectangle<float>(u * 0.27f, u * 0.25f).withCentre(c));
+        g.setColour(gold.darker(0.25f)); g.strokePath(coil, PathStrokeType(u * 0.075f));
+        g.setColour(gold); g.strokePath(coil, PathStrokeType(u * 0.06f));
+        tube(P(0.12f, 0.48f), P(0.24f, 0.78f), u * 0.06f, gold);
+        for (int v = 0; v < 3; ++v) tube(P(-0.04f + v * 0.035f, 0.52f), P(-0.04f + v * 0.035f, 0.58f), u * 0.022f, silver);
+        const auto bell = P(0.27f, 0.84f);
+        const float bw = u * 0.26f * pulse, bh = u * 0.11f * pulse;
+        clayEllipse(g, Rectangle<float>(bw, bh).withCentre(bell), gold);
+        g.setColour(gold.darker(0.5f)); g.fillEllipse(Rectangle<float>(bw * 0.7f, bh * 0.5f).withCentre(bell.translated(0, -bh * 0.08f)));
+    }
+}
+
 void Stage::paint(Graphics& g) {
     auto r = getLocalBounds().toFloat();
-    if (bg.isNull() || bg.getWidth() != getWidth() || bg.getHeight() != getHeight()) {
+    const int mode = jlimit(0, 2, proc.stageMode.load());
+    if (bg.isNull() || bg.getWidth() != getWidth() || bg.getHeight() != getHeight() || bgMode != mode) {
         bg = Image(Image::RGB, jmax(1, getWidth()), jmax(1, getHeight()), true);
         Graphics bgG(bg);
-        drawBackground(bgG, r);
+        drawBackground(bgG, r, mode);
+        bgMode = mode;
     }
     g.drawImageAt(bg, 0, 0);
     const float t = frame / 12.0f, w = r.getWidth(), h = r.getHeight();
     // drifting clouds and pollen
     for (int c = 0; c < 4; ++c) {
         const float x = std::fmod(w * hash(c, 1) + t * (6 + 4 * c), w + 220) - 110, y = h * (0.08f + 0.1f * c), s = 26 + 8 * hash(c, 2);
-        g.setColour(Colours::white.withAlpha(0.85f));
+        g.setColour(mode == 0 ? Colours::white.withAlpha(0.85f) : mode == 1 ? Colour(0xd9ffd2c0) : Colour(0x8056607d));
         for (int b = 0; b < 4; ++b) g.fillEllipse(x + b * s * 0.7f, y - (b % 2) * s * 0.3f, s * 1.2f, s * 0.8f);
     }
-    g.setColour(Colour(0xfffff6c8).withAlpha(0.7f));
+    // pollen by day, fireflies at night
+    g.setColour(mode == 2 ? Colour(0xfffff07a).withAlpha(0.85f) : Colour(0xfffff6c8).withAlpha(0.7f));
     for (int i = 0; i < 26; ++i) {
         const float x = std::fmod(w * hash(i, 11) + std::sin(t * 0.4f + i) * 20 + t * 3, w), y = h - std::fmod(h * hash(i, 12) + t * (6 + 4 * hash(i, 13)), h * 0.9f);
         g.fillEllipse(x, y, 2.4f, 2.4f);
@@ -300,6 +378,31 @@ void Stage::paint(Graphics& g) {
     for (int k : order) {
         const float u = jmin(h * 0.52f, spacing * 1.25f) * goat::kCast[(size_t)k].size;
         drawGoat(g, k, spacing * (k + 1), h - 34 - (k % 2) * 14, u, k);
+    }
+
+    // Night: the land goes dark and a spotlight follows the selected goat
+    spotOn += ((mode == 2 ? 1.0f : 0.0f) - spotOn) * 0.3f;
+    const int sel = jlimit(0, n - 1, proc.selected.load());
+    const float tx = spacing * (sel + 1), gy = h - 34 - (sel % 2) * 14, su = jmin(h * 0.52f, spacing * 1.25f);
+    spotX = spotX < 0 ? tx : spotX + (tx - spotX) * 0.35f;
+    if (spotOn > 0.01f) {
+        const float poolW = su * 0.9f, poolH = su * 0.22f, sing = proc.goatLevel[(size_t)sel].load() > 0.05f ? 1.0f : 0.0f;
+        Path dark;
+        dark.setUsingNonZeroWinding(false);
+        dark.addRectangle(r);
+        Path beam;
+        beam.startNewSubPath(spotX - 26, 0); beam.lineTo(spotX + 26, 0);
+        beam.lineTo(spotX + poolW * 0.5f, gy); beam.lineTo(spotX - poolW * 0.5f, gy); beam.closeSubPath();
+        dark.addPath(beam);
+        g.setColour(Colour(0xff0b1430).withAlpha(0.42f * spotOn));
+        g.fillPath(dark);
+        g.setGradientFill(ColourGradient(Colour(0xfffff0cf).withAlpha((0.16f + 0.05f * sing) * spotOn), spotX, 0,
+                                         Colour(0xffffe2aa).withAlpha(0.06f * spotOn), spotX, gy, false));
+        g.fillPath(beam);
+        const auto pool = Rectangle<float>(poolW, poolH).withCentre({spotX, gy + 2});
+        g.setGradientFill(ColourGradient(Colour(0xffffe2aa).withAlpha(0.5f * spotOn), pool.getCentreX(), pool.getCentreY(),
+                                         Colour(0x00ffd696), pool.getRight(), pool.getCentreY(), true));
+        g.fillEllipse(pool);
     }
 
     // the chord being sung
@@ -386,10 +489,10 @@ Seg::Seg(GoatChoirProcessor& p, const char* paramId, const String& t) : title(t)
     });
     att->sendInitialUpdate();
 }
-void Seg::setRows(int r) {
+void Seg::setRows(int r, bool small) {
     rows = jmax(1, r);
     for (auto* b : buttons) {
-        if (rows > 1) b->getProperties().set("small", true); else b->getProperties().remove("small");
+        if (rows > 1 || small) b->getProperties().set("small", true); else b->getProperties().remove("small");
         b->setButtonText(b->getButtonText().replace(" Dn", String::fromUTF8(" \xe2\x86\x93")));   // Arp Dn -> Arp (down arrow)
     }
     resized();
@@ -433,6 +536,85 @@ void WordsLine::paint(Graphics& g) {
         g.setColour(k == cur ? col::gold : proc.wordsOn ? col::ink : col::dim);
         g.drawText(list[k], Rectangle<float>(x, 0, w + 4, (float)getHeight()), Justification::centredLeft);
         x += w;
+    }
+}
+
+// ---------------- note graph ----------------
+void NoteGraph::timerCallback() {
+    // smooth while the progression plays; otherwise only when it changes (and now and then for knob changes)
+    const bool playing = proc.progBeat.load() >= 0;
+    if (playing || proc.progVersion != seenVersion || ++idle > 8) { seenVersion = proc.progVersion; idle = 0; repaint(); }
+}
+void NoteGraph::paint(Graphics& g) {
+    auto r = getLocalBounds().toFloat();
+    g.setGradientFill(ColourGradient(Colour(0xff1b1724), 0, 0, Colour(0xff0d0b12), 0, r.getHeight(), false));
+    g.fillRoundedRectangle(r, 8);
+    const auto& items = proc.prog;
+    if (items.empty()) {
+        g.setColour(col::dim); g.setFont(Font(13.0f));
+        g.drawText("NOTE GRAPH: record a progression and every note the goats sing shows up here", r, Justification::centred);
+        return;
+    }
+    // every note the choir will sing, in beats from the start, the way the current style sings it
+    const int style = proc.choice("style"), shift = proc.pitch();
+    const double strum = proc.apvts.getRawParameterValue("strum")->load() * 0.3;
+    struct N { int n; double a, b; int goat; };
+    std::vector<N> notes; std::vector<std::pair<double, double>> secs; std::vector<goat::NoteSpan> sp;
+    double B = 0;
+    for (auto& it : items) {
+        sp.clear();
+        goat::itemNotes(it.notes, it.bars, style, strum, sp);
+        for (auto& x : sp) notes.push_back({x.note + shift, B + x.a, B + x.b, x.goat});
+        secs.push_back({B, B + it.bars * 4});
+        B += it.bars * 4;
+    }
+    if (notes.empty() || B <= 0) return;
+    int lo = 127, hi = 0;
+    for (auto& x : notes) { lo = jmin(lo, x.n); hi = jmax(hi, x.n); }
+    const double mid = (lo + hi) / 2.0, span = jmax(18.0, hi - lo + 3.0), bot = mid - span / 2;
+    const float pad = 8, top = 20, W = r.getWidth(), H = r.getHeight();
+    auto X = [&](double b) { return pad + (float)(b / B) * (W - 2 * pad); };
+    auto Y = [&](double n) { return top + (float)(1 - (n - bot) / span) * (H - top - pad); };
+    const float nh = jmax(4.0f, (H - top - pad) / (float)span * 1.5f);
+    const double ph = proc.progBeat.load();
+    // octave lines
+    g.setFont(Font(10.0f));
+    for (int n = (int)std::ceil(bot / 12) * 12; n <= bot + span; n += 12) {
+        const float y = Y(n);
+        g.setColour(Colours::white.withAlpha(0.06f)); g.drawHorizontalLine((int)y, pad, W - pad);
+        g.setColour(Colours::white.withAlpha(0.22f)); g.drawText(goat::noteName(n), (int)(W - pad - 26), (int)y - 12, 24, 10, Justification::right);
+    }
+    // chord sections: soft bands, names along the top
+    g.setFont(bold(11));
+    for (size_t k = 0; k < secs.size(); ++k) {
+        const auto [a, b] = secs[k];
+        const bool on = ph >= a && ph < b;
+        const float x0 = X(a), x1 = X(b);
+        if (k % 2) { g.setColour(Colours::white.withAlpha(0.025f)); g.fillRect(x0, top - 4, x1 - x0, H - top); }
+        if (on) { g.setGradientFill(ColourGradient(Colour(0x1affd76a), 0, top, Colour(0x00ffd76a), 0, H, false)); g.fillRect(x0, top - 4, x1 - x0, H - top); }
+        g.setColour(Colours::white.withAlpha(0.08f)); g.drawVerticalLine((int)x0, top - 4, H - pad);
+        g.setColour(on ? Colour(0xffffd76a) : Colours::white.withAlpha(0.5f));
+        g.drawText(items[k].name, (int)x0 + 4, 2, (int)jmax(10.0f, x1 - x0 - 6), 14, Justification::left, true);
+    }
+    // the notes: one colour per goat (their scarf), glowing while they sound
+    for (auto& x : notes) {
+        const float x0 = X(x.a), w = jmax(2.0f, X(x.b) - x0 - 1.5f), y = Y(x.n) - nh / 2;
+        const Colour c = rgb(goat::kLooks[(size_t)proc.look[(size_t)jlimit(0, goat::kMaxGoats - 1, x.goat)]].c);
+        const bool live = ph >= x.a && ph < x.b;
+        const Rectangle<float> rr(x0, y, w, nh);
+        if (live) { g.setColour(c.withAlpha(0.35f)); g.fillRoundedRectangle(rr.expanded(3), jmin(nh / 2 + 3, 7.0f)); }
+        g.setGradientFill(ColourGradient(live ? Colour(0xfffff4d6) : c.brighter(0.15f), 0, y, c, 0, y + nh, false));
+        g.setOpacity(live ? 1.0f : ph >= 0 ? 0.55f : 0.85f);
+        g.fillRoundedRectangle(rr, jmin(nh / 2, 4.0f));
+        g.setOpacity(1.0f);
+    }
+    // playhead, with a short glowing trail
+    if (ph >= 0) {
+        const float x = X(ph);
+        g.setGradientFill(ColourGradient(Colour(0x00ffd76a), x - 40, 0, Colour(0x2effd76a), x, 0, false));
+        g.fillRect(x - 40, top - 4, 40.0f, H - top);
+        g.setColour(Colour(0x55ffd76a)); g.fillRect(x - 3, top - 6, 6.0f, H - top + 2);
+        g.setColour(Colour(0xffffd76a)); g.fillRect(x - 1, top - 6, 2.0f, H - top + 2);
     }
 }
 
@@ -612,10 +794,10 @@ void DragHandle::mouseUp(const MouseEvent& e) {
 // ---------------- editor ----------------
 GoatChoirEditor::GoatChoirEditor(GoatChoirProcessor& p)
     : AudioProcessorEditor(&p), proc(p), stage(p),
-      sing(p, "sing", "Sing"), style(p, "style", "Style"), vowel(p, "vowel", "Vowel"), chop(p, "chop", "Chop"),
+      sing(p, "sing", "Sing"), style(p, "style", "Style"), vowel(p, "vowel", "Vowel"), chop(p, "chop", "Chop"), flavor(p, "flavor", "Chord flavor"),
       motionSync(p, "motionSync", "Sync"), motionLen(p, "motionLen", "Length"),
       curve(p), depthBar(p, "motionDepth", "Depth"), chanceBar(p, "motionChance", "Chance"),
-      chips(p), drag(p), wordsLine(p) {
+      chips(p), drag(p), roll(p), wordsLine(p) {
     setLookAndFeel(&lnf);
     addAndMakeVisible(stage);
     stage.onSelect = [this] { refreshCard(); };
@@ -639,8 +821,8 @@ GoatChoirEditor::GoatChoirEditor(GoatChoirProcessor& p)
     roomAtt = std::make_unique<AudioProcessorValueTreeState::SliderAttachment>(p.apvts, "room", room);
     vol.setTooltip("Volume"); room.setTooltip("Room: how much mountain echo");
 
-    for (auto* c : {&sing, &style, &vowel, &chop, &motionSync, &motionLen}) addAndMakeVisible(*c);
-    style.setRows(2);
+    for (auto* c : {&sing, &style, &vowel, &chop, &flavor, &motionSync, &motionLen}) addAndMakeVisible(*c);
+    style.setRows(2); flavor.setRows(2); chop.setRows(1, true);
 
     // Strum knob: the gap between goats, low to high. Turning it up from Block switches to Strum
     strumKnob.setSliderStyle(Slider::RotaryHorizontalVerticalDrag);
@@ -707,7 +889,37 @@ GoatChoirEditor::GoatChoirEditor(GoatChoirProcessor& p)
 
     prevG.onClick = [this] { proc.selected = (proc.selected.load() + goats - 1) % goats; refreshCard(); };
     nextG.onClick = [this] { proc.selected = (proc.selected.load() + 1) % goats; refreshCard(); };
-    for (int v = 0; v < 5; ++v) voiceBox.addItem(goat::kVoices[(size_t)v].label, v + 1);
+    for (auto [title, sex] : {std::pair<const char*, char>{"Male", 'm'}, {"Female", 'f'}, {"Young", 'k'}}) {
+        voiceBox.addSectionHeading(title);
+        for (int v = 0; v < goat::kVoiceTypes; ++v) if (goat::kVoices[(size_t)v].sex == sex) voiceBox.addItem(goat::kVoices[(size_t)v].label, v + 1);
+    }
+    // Male / Female: the same part in the other voice (Bass and Alto, Baritone and Mezzo, Tenor and Soprano)
+    for (auto* b : {&maleBtn, &femaleBtn}) { b->setClickingTogglesState(false); b->getProperties().set("small", true); }
+    maleBtn.setTooltip("Male voice"); femaleBtn.setTooltip("Female voice");
+    auto pickSex = [this](char x) {
+        auto& vt = proc.voiceType[(size_t)proc.selected.load()];
+        vt = goat::swapVoice(vt.load(), x);
+        refreshCard();
+    };
+    maleBtn.onClick = [pickSex] { pickSex('m'); };
+    femaleBtn.onClick = [pickSex] { pickSex('f'); };
+    for (int k = 0; k < goat::kSounds; ++k) soundBox.addItem(goat::kSoundDefs[(size_t)k].label, k + 1);
+    soundBox.setTooltip("What this goat sounds like: a voice, or an instrument it holds and plays");
+    soundBox.onChange = [this] { proc.sound[(size_t)proc.selected.load()] = soundBox.getSelectedId() - 1; refreshCard(); };
+    bandBtn.setClickingTogglesState(false);
+    bandBtn.getProperties().set("small", true);
+    bandBtn.setTooltip("Hand every goat the instrument for its voice (press again for voices)");
+    bandBtn.onClick = [this] { proc.uiBand(); refreshCard(); };
+    for (Component* c : std::initializer_list<Component*>{&maleBtn, &femaleBtn, &soundBox, &bandBtn}) addAndMakeVisible(*c);
+    // the stage: Day, Sunset or Night (a spotlight follows the selected goat)
+    for (int i = 0; i < 3; ++i) {
+        auto* b = stageBtns.add(new TextButton(i == 0 ? "Day" : i == 1 ? "Sunset" : "Night"));
+        b->getProperties().set("small", true);
+        b->setClickingTogglesState(false);
+        b->onClick = [this, i] { proc.stageMode = i; refreshCard(); };
+        addAndMakeVisible(b);
+    }
+    addAndMakeVisible(roll);
     voiceBox.onChange = [this] { proc.voiceType[(size_t)proc.selected.load()] = voiceBox.getSelectedId() - 1; refreshCard(); };
     voiceBox.setTooltip("This goat's voice: sets its range and its formants");
     muteBtn.setClickingTogglesState(true);
@@ -718,9 +930,10 @@ GoatChoirEditor::GoatChoirEditor(GoatChoirProcessor& p)
         l = (l + 1) % (int)goat::kLooks.size();
         refreshCard();
     };
-    goatName.setFont(gc::bold(14));
+    goatName.setFont(gc::bold(13));
     goatName.setJustificationType(Justification::centred);
     for (Component* c : std::initializer_list<Component*>{&prevG, &nextG, &voiceBox, &muteBtn, &scarfBtn, &goatName}) addAndMakeVisible(*c);
+    muteBtn.getProperties().set("small", true); scarfBtn.getProperties().set("small", true);
 
     recBtn.setClickingTogglesState(true);
     recBtn.setColour(TextButton::buttonOnColourId, gc::col::rec);
@@ -783,7 +996,7 @@ GoatChoirEditor::~GoatChoirEditor() { setLookAndFeel(nullptr); }
 
 void GoatChoirEditor::refreshLabels() {
     std::array<goat::Chord, goat::kStrips> c;
-    goat::buildChords(proc.choice("key"), proc.choice("scale"), proc.choice("colour") + 3, c, &stage.lab);
+    goat::buildChords(proc.choice("key"), proc.choice("scale"), proc.choice("colour") + 3, c, &stage.lab, proc.choice("flavor"));
     for (int i = 0; i < goat::kStrips; ++i) { strips[(size_t)i]->lab = stage.lab[(size_t)i]; strips[(size_t)i]->chord = c[(size_t)i]; strips[(size_t)i]->repaint(); }
 }
 
@@ -800,6 +1013,11 @@ void GoatChoirEditor::refreshCard() {
     const auto& V = goat::kVoices[(size_t)v];
     goatName.setText(String(goat::kCast[(size_t)sel].name) + "  " + goat::noteName(V.lo) + "-" + goat::noteName(V.hi), dontSendNotification);
     voiceBox.setSelectedId(v + 1, dontSendNotification);
+    maleBtn.setToggleState(V.sex == 'm', dontSendNotification);
+    femaleBtn.setToggleState(V.sex == 'f', dontSendNotification);
+    soundBox.setSelectedId(proc.sound[(size_t)sel].load() + 1, dontSendNotification);
+    bandBtn.setToggleState(proc.isBand(), dontSendNotification);
+    for (int i = 0; i < stageBtns.size(); ++i) stageBtns[i]->setToggleState(i == proc.stageMode.load(), dontSendNotification);
     muteBtn.setToggleState(proc.muted[(size_t)sel].load(), dontSendNotification);
     scarfBtn.setColour(TextButton::buttonColourId, gc::rgb(goat::kLooks[(size_t)proc.look[(size_t)sel]].c));
     seenSel = sel;
@@ -817,7 +1035,7 @@ void GoatChoirEditor::refreshWords() {
 void GoatChoirEditor::timerCallback() {
     if (wordsLine.version != proc.wordsVersion) refreshWords();
     if (wordsLine.shown != proc.sungWord.load()) { wordsLine.shown = proc.sungWord.load(); wordsLine.repaint(); }
-    const int key = proc.choice("key") * 100 + proc.choice("scale") * 10 + proc.choice("colour");
+    const int key = ((proc.choice("key") * 100 + proc.choice("scale") * 10 + proc.choice("colour")) * 10 + proc.choice("flavor")) * 30 + proc.pitch() + 12;
     if (key != seenKey) { seenKey = key; refreshLabels(); }
     const int cur = proc.currentChord.load();
     for (int i = 0; i < goat::kStrips; ++i) {
@@ -867,9 +1085,10 @@ void GoatChoirEditor::paint(Graphics& g) {
     g.drawText("MIDI KEYS", 584, 0, 70, 46, Justification::centredLeft);
     g.drawText("VOL", 922, 0, 30, 46, Justification::centredLeft);
     g.drawText("GOATS", 14, 552, 60, 14, Justification::left);
-    g.drawText("ROOM", 190, 552, 60, 14, Justification::left);
-    g.drawText("MOUSE", 400, 552, 60, 14, Justification::left);
-    g.drawText("SELECTED GOAT", 562, 552, 120, 14, Justification::left);
+    g.drawText("ROOM", 154, 552, 60, 14, Justification::left);
+    g.drawText("SELECTED GOAT", 464, 552, 120, 14, Justification::left);
+    g.drawText("VOICE", 618, 552, 60, 14, Justification::left);
+    g.drawText("SOUND", 786, 552, 60, 14, Justification::left);
     g.drawText("STRUM", 12, 612, 60, 14, Justification::left);
     g.drawText("PITCH", 74, 612, 60, 14, Justification::left);
     g.drawText("MOTION", 142, 612, 70, 14, Justification::left);
@@ -882,6 +1101,7 @@ void GoatChoirEditor::paint(Graphics& g) {
     g.fillRect(0, 604, getWidth(), 1);
     g.fillRect(0, 712, getWidth(), 1);
     g.fillRect(0, 756, getWidth(), 1);
+    g.fillRect(0, 852, getWidth(), 1);
 }
 
 void GoatChoirEditor::resized() {
@@ -898,20 +1118,27 @@ void GoatChoirEditor::resized() {
 
     sing.setBounds(12, 492, 210, 48);
     style.setBounds(236, 492, 210, 72);   // 4 x 2 grid of the eight styles
-    vowel.setBounds(460, 492, 330, 48);
-    chop.setBounds(804, 492, 244, 48);
+    vowel.setBounds(460, 492, 232, 48);
+    chop.setBounds(700, 492, 168, 48);
+    flavor.setBounds(876, 492, 172, 72);   // 4 + 3 grid of the flavors
 
     fewer.setBounds(12, 568, 30, 28);
     more.setBounds(110, 568, 30, 28);
-    room.setBounds(186, 568, 190, 28);
-    latchBtn.setBounds(398, 568, 70, 28);
-    stopBtn.setBounds(474, 568, 70, 28);
-    prevG.setBounds(560, 568, 28, 28);
-    goatName.setBounds(590, 568, 150, 28);
-    nextG.setBounds(742, 568, 28, 28);
-    voiceBox.setBounds(778, 568, 110, 28);
-    muteBtn.setBounds(894, 568, 70, 28);
-    scarfBtn.setBounds(970, 568, 78, 28);
+    room.setBounds(152, 568, 140, 28);
+    latchBtn.setBounds(300, 568, 60, 28);
+    stopBtn.setBounds(364, 568, 60, 28);
+    prevG.setBounds(434, 568, 26, 28);
+    goatName.setBounds(462, 568, 120, 28);
+    nextG.setBounds(584, 568, 26, 28);
+    voiceBox.setBounds(618, 568, 94, 28);
+    maleBtn.setBounds(716, 568, 28, 28);
+    femaleBtn.setBounds(746, 568, 28, 28);
+    soundBox.setBounds(784, 568, 100, 28);
+    bandBtn.setBounds(888, 568, 50, 28);
+    muteBtn.setBounds(944, 568, 50, 28);
+    scarfBtn.setBounds(998, 568, 50, 28);
+    for (int i = 0; i < stageBtns.size(); ++i) stageBtns[i]->setBounds(getWidth() - 12 - (3 - i) * 60, 46 + 300 - 32, 56, 24);
+    roll.setBounds(10, 860, getWidth() - 20, 92);
 
     strumKnob.setBounds(6, 626, 62, 80);
     pitchKnob.setBounds(68, 626, 62, 80);

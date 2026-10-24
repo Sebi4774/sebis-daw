@@ -263,21 +263,86 @@ int main(int argc, char** argv) {
         render(p, host, sr, 1, {}, dir.getChildFile("_flush.wav"), 0.3);
     }
 
+    std::cout << "Chord flavors:\n";
+    {
+        std::array<goat::Chord, goat::kStrips> c; std::array<goat::ChordLabel, goat::kStrips> l;
+        goat::buildChords(3, goat::Minor, 4, c, &l, goat::Fl13);
+        std::cout << "  13: "; for (auto& x : l) std::cout << x.name << " "; std::cout << "\n";
+        check(l[0].name == "D#m13" && c[0].n == 6 && c[0].nPrefs == 5, "13 turns i7 into D#m13 (6 notes)");
+        check(l[5].name == "F\xc3\xb8" "7", "diminished chords stay as they are (" + String::fromUTF8(l[5].name.c_str()) + ")");
+        goat::buildChords(3, goat::Minor, 4, c, &l, goat::FlSus4);
+        check(l[0].name == "D#7sus4" && c[0].iv[1] == 5, "sus4 with 7ths: D#7sus4");
+        goat::buildChords(3, goat::Minor, 3, c, &l, goat::FlSus2);
+        check(l[0].name == "D#sus2" && c[0].n == 3, "sus2 with triads: D#sus2");
+        goat::buildChords(3, goat::Minor, 5, c, &l, goat::Fl6);
+        check(l[0].name == "D#m6/9" && c[0].n == 5, "6 with 9ths: D#m6/9");
+        goat::buildChords(3, goat::Minor, 4, c, &l, goat::Fl11);
+        check(l[7].name == "A#7(#11)", "11 on the V7: A#7(#11) (" + String(l[7].name) + ")");
+    }
+    host.playing = true; p.setWords("", false);
+    setParam(p, "flavor", goat::Fl13);
+    r = render(p, host, sr, 4, strips({0}, 4), dir.getChildFile("11_flavor_13.wav"));
+    std::array<goat::ChordLabel, goat::kStrips> lab13; p.labels(lab13);
+    check(r.peak > 0.05f && r.peak < 1.0f && lab13[0].name == "D#m13", "the 13 flavor plays and relabels the strips");
+    setParam(p, "flavor", 0);
+
+    std::cout << "Male / Female voices:\n";
+    check(goat::swapVoice(goat::Bass, 'f') == goat::Alto && goat::swapVoice(goat::Baritone, 'f') == goat::Mezzo
+          && goat::swapVoice(goat::Tenor, 'f') == goat::Soprano && goat::swapVoice(goat::Mezzo, 'm') == goat::Baritone
+          && goat::swapVoice(goat::Kid, 'm') == goat::Tenor && goat::swapVoice(goat::Kid, 'f') == goat::Soprano, "Male / Female swap partners");
+    for (int k = 0; k < 4; ++k) p.voiceType[(size_t)k] = goat::swapVoice(p.voiceType[(size_t)k].load(), 'f');
+    r = render(p, host, sr, 4, strips({0}, 4), dir.getChildFile("12_female_choir.wav"));
+    check(r.peak > 0.05f && r.peak < 1.0f && r.midiOn == r.midiOff, "an all-female choir sings");
+    for (int k = 0; k < goat::kMaxGoats; ++k) p.voiceType[(size_t)k] = goat::kCast[(size_t)k].voice;
+
+    std::cout << "Sounds per goat:\n";
+    for (int snd = 0; snd < goat::kSounds; ++snd) {
+        for (int k = 0; k < goat::kMaxGoats; ++k) p.sound[(size_t)k] = snd;
+        r = render(p, host, sr, 4, strips({0}, 4), dir.getChildFile("13_sound_" + String(goat::kSoundDefs[(size_t)snd].label).toLowerCase() + ".wav"));
+        check(r.peak > 0.03f && r.peak < 1.0f && r.midiOn == r.midiOff, String(goat::kSoundDefs[(size_t)snd].label) + " plays");
+    }
+    for (int k = 0; k < goat::kMaxGoats; ++k) p.sound[(size_t)k] = goat::SndVoice;
+    p.uiBand();
+    check(p.sound[0].load() == goat::SndTuba && p.sound[1].load() == goat::SndFlute && p.sound[4].load() == goat::SndTrumpet && p.isBand(), "Band hands out instruments by voice");
+    r = render(p, host, sr, 8, strips({0, 4}, 4), dir.getChildFile("14_band.wav"));
+    check(r.peak > 0.05f && r.peak < 1.0f, "the band plays");
+    p.uiBand();
+    check(!p.isBand(), "Band again: back to voices");
+
     std::cout << "State save and load:\n";
     MemoryBlock mb; p.getStateInformation(mb);
     GoatChoirProcessor q; q.setStateInformation(mb.getData(), (int)mb.getSize());
     check(q.prog.size() == p.prog.size() && q.choice("key") == p.choice("key"), "progression and settings come back");
-    check(q.wordsText == p.wordsText && q.wordsOn && q.wordsSyl.size() == p.wordsSyl.size(), "the Words line comes back");
+    check(q.wordsText == p.wordsText && q.wordsSyl.size() == p.wordsSyl.size(), "the Words line comes back");
+    {
+        p.voiceType[2] = goat::Mezzo; p.sound[3] = goat::SndViolin; p.stageMode = 2;
+        MemoryBlock mb2; p.getStateInformation(mb2);
+        GoatChoirProcessor q2; q2.setStateInformation(mb2.getData(), (int)mb2.getSize());
+        check(q2.voiceType[2].load() == goat::Mezzo && q2.sound[3].load() == goat::SndViolin && q2.stageMode.load() == 2, "voice types, sounds and the stage come back");
+        p.voiceType[2] = goat::kCast[2].voice; p.sound[3] = goat::SndVoice;
+    }
 
-    std::cout << "Editor snapshot:\n";
+    std::cout << "Editor snapshot (Night, spotlight on Clover, band, progression playing):\n";
     host.playing = true;
-    render(p, host, sr, 0.5, {{0, MidiMessage::noteOn(1, 62, (uint8)100)}}, dir.getChildFile("_warm.wav"), 0.3);
+    p.setWords("la la love you", true);
+    p.selected = 1; p.uiBand();
+    setParam(p, "flavor", goat::FlAdd9);
+    p.setProgPlaying(true);
+    render(p, host, sr, 5.5, {}, dir.getChildFile("_warm.wav"), 0.0);
     std::unique_ptr<AudioProcessorEditor> ed(p.createEditor());
     pump();
-    Image img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
+    Image img;
+    for (int i = 0; i < 10; ++i) img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);   // let the spotlight fade in
     auto png = dir.getChildFile("editor.png"); png.deleteFile();
     { FileOutputStream os(png); PNGImageFormat().writeImageToStream(img, os); }
     check(img.getWidth() == 1060, "editor is 1060 x " + String(img.getHeight()));
+    p.stageMode = 1;
+    {
+        auto f = dir.getChildFile("editor_sunset.png"); f.deleteFile();
+        Image im = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
+        FileOutputStream os(f); PNGImageFormat().writeImageToStream(im, os);
+    }
+    p.setProgPlaying(false); p.uiBand(); setParam(p, "flavor", 0);
     ed.reset();
     dir.getChildFile("_flush.wav").deleteFile(); dir.getChildFile("_warm.wav").deleteFile();
     std::cout << (failures ? String(failures) + " FAILED" : String("all passed")) << "\n";

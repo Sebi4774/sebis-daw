@@ -43,7 +43,17 @@ PLAY IT
     chord. Length is 1/4 bar to 2 bars. Depth sets how deep it goes;
     Chance skips some cycles at random (the same way every time).
     Saved MIDI carries Motion as CC11 (expression).
-  * Click a goat to select it: change its voice, mute it, change its scarf.
+  * Chord flavor recolours every strip: sus2, sus4, add9, 6 (6/9), 11, 13.
+    Diminished chords stay as they are. It can be automated in FL.
+  * Click a goat to select it: change its voice (M / F swaps Bass-Alto,
+    Baritone-Mezzo, Tenor-Soprano), its sound (Voice, Opera, Whisper,
+    Trumpet, Violin, Flute, Tuba; it holds and plays the instrument), mute
+    it, change its scarf. Band hands every goat an instrument (press again
+    for voices).
+  * Day / Sunset / Night (bottom right of the stage): at Night a spotlight
+    follows the selected goat.
+  * The note graph at the bottom shows the recorded progression, one colour
+    per goat, lighting up as it plays.
   * Words: type a line and the goats sing it, one syllable per chord (or
     one per step in Arp to Bounce), every goat on the same syllable. The
     word being sung lights up. "Words off" goes back to plain vowels and

@@ -33,11 +33,13 @@ public:
     std::function<void()> onSelect;
 private:
     void timerCallback() override { ++frame; repaint(); }
-    void drawBackground(juce::Graphics&, juce::Rectangle<float>);
+    void drawBackground(juce::Graphics&, juce::Rectangle<float>, int mode);
     void drawGoat(juce::Graphics&, int k, float cx, float gy, float u, int idx);
+    void drawInstrument(juce::Graphics&, int sound, std::function<juce::Point<float>(float, float)> P, float u, float lvl, float t);
     GoatChoirProcessor& proc;
     juce::Image bg;
-    int frame = 0;
+    int frame = 0, bgMode = -1;
+    float spotX = -1, spotOn = 0;
     std::array<juce::Rectangle<float>, goat::kMaxGoats> hit;
 };
 
@@ -74,7 +76,7 @@ public:
     Seg(GoatChoirProcessor& p, const char* paramId, const juce::String& title);
     void resized() override;
     void paint(juce::Graphics&) override;
-    void setRows(int r);
+    void setRows(int r, bool small = false);
 private:
     juce::String title;
     int rows = 1;
@@ -139,6 +141,17 @@ private:
     GoatChoirProcessor& proc;
 };
 
+// the recorded progression as notes: one colour per goat (its scarf), glowing while they sound, with a playhead
+class NoteGraph : public juce::Component, private juce::Timer {
+public:
+    explicit NoteGraph(GoatChoirProcessor& p) : proc(p) { startTimerHz(30); }
+    void paint(juce::Graphics&) override;
+private:
+    void timerCallback() override;
+    GoatChoirProcessor& proc;
+    int seenVersion = -1, idle = 0;
+};
+
 // drag this straight into FL's playlist or piano roll
 class DragHandle : public juce::Component {
 public:
@@ -175,7 +188,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> midiOutAtt;
     juce::Slider vol, room;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> volAtt, roomAtt;
-    gc::Seg sing, style, vowel, chop, motionSync, motionLen;
+    gc::Seg sing, style, vowel, chop, flavor, motionSync, motionLen;
     juce::Slider strumKnob;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> strumAtt;
     gc::PitchKnob pitchKnob;
@@ -190,6 +203,10 @@ private:
     std::unique_ptr<juce::ParameterAttachment> goatsAtt;
     int goats = 4;
     juce::TextButton prevG{"<"}, nextG{">"}, muteBtn{"Mute"}, scarfBtn{"Scarf"};
+    juce::TextButton maleBtn{"M"}, femaleBtn{"F"}, bandBtn{"Band"};
+    juce::ComboBox soundBox;
+    juce::OwnedArray<juce::TextButton> stageBtns;
+    gc::NoteGraph roll;
     juce::Label goatName;
     juce::TextButton recBtn{"Rec"}, playBtn{"Play"}, undoBtn{"Undo"}, clearBtn{"Clear"}, saveBtn{"Save MIDI"};
     gc::Chips chips;

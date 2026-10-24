@@ -9,7 +9,7 @@ GoatChoirProcessor::GoatChoirProcessor()
     : AudioProcessor(BusesProperties().withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       apvts(*this, nullptr, "GoatChoir", createLayout()) {
     for (int k = 0; k < goat::kMaxGoats; ++k) {
-        voiceType[k] = goat::kCast[k].voice; muted[k] = false; look[k] = goat::kCast[k].look;
+        voiceType[k] = goat::kCast[k].voice; muted[k] = false; look[k] = goat::kCast[k].look; sound[k] = goat::SndVoice;
         goatLevel[k] = 0; goatNote[k] = -1;
     }
     startTimerHz(30);
@@ -24,6 +24,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout GoatChoirProcessor::createLa
     ch("key", "Key", keys, 3);
     ch("scale", "Scale", {"Minor", "Harmonic minor", "Major"}, 0);
     ch("colour", "Colour", {"Triads", "7ths", "9ths"}, 1);
+    ch("flavor", "Flavor", {"Plain", "sus2", "sus4", "add9", "6", "11", "13"}, 0);
     ch("sing", "Sing", {"Choir", "Unison", "Solo"}, 0);
     ch("style", "Style", {"Block", "Strum", "Down", "Arp", "Arp Dn", "Broken", "Pulse", "Bounce"}, 0);
     ch("vowel", "Vowel", {"OO", "OH", "AH", "EH", "EE", "Mm"}, 2);
@@ -76,6 +77,16 @@ void GoatChoirProcessor::uiStrip(int i, bool down) {
     } else if (!latch) push({CmdStop, 0, {}});
 }
 void GoatChoirProcessor::uiStop() { push({CmdStop, 0, {}}); }
+// Band: hand every goat the instrument for its voice type, or (if any already plays one) back to voices
+void GoatChoirProcessor::uiBand() {
+    bool band = false;
+    for (auto& s : sound) band |= s.load() != goat::SndVoice;
+    for (int k = 0; k < goat::kMaxGoats; ++k) sound[k] = band ? goat::SndVoice : goat::bandSound(voiceType[k].load());
+}
+bool GoatChoirProcessor::isBand() const {
+    for (auto& s : sound) if (s.load() != goat::SndVoice) return true;
+    return false;
+}
 void GoatChoirProcessor::uiAudition(int item) {
     if (item < 0 || item >= (int)prog.size()) return;
     push({CmdPlan, prog[(size_t)item].chord, prog[(size_t)item].notes});
@@ -151,7 +162,7 @@ void GoatChoirProcessor::uiSay() {
 
 void GoatChoirProcessor::labels(std::array<goat::ChordLabel, goat::kStrips>& out) const {
     std::array<goat::Chord, goat::kStrips> c;
-    goat::buildChords(choice("key"), choice("scale"), choice("colour") + 3, c, &out);
+    goat::buildChords(choice("key"), choice("scale"), choice("colour") + 3, c, &out, choice("flavor"));
 }
 
 void GoatChoirProcessor::timerCallback() {
@@ -217,12 +228,14 @@ void GoatChoirProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     choir.bpm = bpm; choir.hostPlaying = playing;
     hostBpm = bpm; hostPlaying = playing;
 
-    choir.root = choice("key"); choir.scale = choice("scale"); choir.ext = choice("colour") + 3;
+    choir.root = choice("key"); choir.scale = choice("scale"); choir.ext = choice("colour") + 3; choir.flavor = choice("flavor");
     choir.rebuildIfNeeded();
     choir.mode = choice("sing"); choir.style = choice("style"); choir.chop = kChopMul[choice("chop")];
     choir.setVowel(choice("vowel"));
     choir.sel = selected.load();
-    for (int k = 0; k < goat::kMaxGoats; ++k) { choir.setVoiceType(k, voiceType[k].load()); choir.setMuted(k, muted[k].load()); }
+    for (int k = 0; k < goat::kMaxGoats; ++k) {
+        choir.setVoiceType(k, voiceType[k].load()); choir.setMuted(k, muted[k].load()); choir.setSound(k, sound[k].load());
+    }
     choir.setCount(choice("goats"));
     choir.strum = apvts.getRawParameterValue("strum")->load();
     choir.motion.on = apvts.getRawParameterValue("motionOn")->load() > 0.5f;
@@ -298,7 +311,10 @@ void GoatChoirProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
     // room: a plate-ish reverb on top of the dry choir
     juce::Reverb::Parameters rp;
     const float room = apvts.getRawParameterValue("room")->load();
-    rp.roomSize = 0.84f; rp.damping = 0.45f; rp.width = 1.0f; rp.dryLevel = 0.5f; rp.wetLevel = room * 0.7f * 0.9f;
+    // talking (Say) goes almost dry, so the room's echo doesn't smear the consonants
+    const double blockSec = n / sr;
+    wetMul += ((choir.speaking() ? 0.3 : 1.0) - wetMul) * (1 - std::exp(-blockSec / (choir.speaking() ? 0.05 : 0.3)));
+    rp.roomSize = 0.84f; rp.damping = 0.45f; rp.width = 1.0f; rp.dryLevel = 0.5f; rp.wetLevel = room * 0.7f * 0.9f * (float)wetMul;
     reverb.setParameters(rp);
     reverb.processStereo(L, R, n);
 
@@ -329,7 +345,8 @@ void GoatChoirProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mi
         }
 
     // report to the editor and the recorder
-    for (int k = 0; k < goat::kMaxGoats; ++k) { goatLevel[k] = (float)(choir.voice(k).amp / 0.22); goatNote[k] = choir.soundingNote(k); }
+    for (int k = 0; k < goat::kMaxGoats; ++k) { goatLevel[k] = (float)choir.voice(k).level(); goatNote[k] = choir.soundingNote(k); }
+    progBeat = choir.progPlaying ? choir.progBeat : -1.0;
     sungWord = choir.wordsOn ? choir.lastWord : -1;
     currentChord = choir.current; motionPhase = (float)choir.motionPhase; progPos = choir.progPlaying ? choir.progPos : -1;
     if (choir.nTrig) {
@@ -366,10 +383,12 @@ void GoatChoirProcessor::getStateInformation(juce::MemoryBlock& destData) {
     juce::ValueTree cast("Cast");
     cast.setProperty("sel", selected.load(), nullptr);
     cast.setProperty("latch", latch, nullptr);
+    cast.setProperty("stage", stageMode.load(), nullptr);
     for (int k = 0; k < goat::kMaxGoats; ++k) {
         cast.setProperty("voice" + juce::String(k), voiceType[k].load(), nullptr);
         cast.setProperty("mute" + juce::String(k), muted[k].load(), nullptr);
         cast.setProperty("look" + juce::String(k), look[k], nullptr);
+        cast.setProperty("sound" + juce::String(k), sound[k].load(), nullptr);
     }
     juce::ValueTree pr("Prog");
     for (auto& it : prog) {
@@ -413,8 +432,10 @@ void GoatChoirProcessor::setStateInformation(const void* data, int sizeInBytes) 
     if (cast.isValid()) {
         selected = (int)cast.getProperty("sel", 0);
         latch = (bool)cast.getProperty("latch", true);
+        stageMode = juce::jlimit(0, 2, (int)cast.getProperty("stage", 0));
         for (int k = 0; k < goat::kMaxGoats; ++k) {
-            voiceType[k] = juce::jlimit(0, 4, (int)cast.getProperty("voice" + juce::String(k), goat::kCast[k].voice));
+            voiceType[k] = juce::jlimit(0, goat::kVoiceTypes - 1, (int)cast.getProperty("voice" + juce::String(k), goat::kCast[k].voice));
+            sound[k] = juce::jlimit(0, goat::kSounds - 1, (int)cast.getProperty("sound" + juce::String(k), 0));
             muted[k] = (bool)cast.getProperty("mute" + juce::String(k), false);
             look[k] = juce::jlimit(0, 5, (int)cast.getProperty("look" + juce::String(k), goat::kCast[k].look));
         }
