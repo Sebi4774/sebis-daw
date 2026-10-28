@@ -379,6 +379,10 @@ struct Biquad {
         const double w = 2 * kPi * f / sr, al = std::sin(w) / (2 * q), cw = std::cos(w), a0 = 1 + al;
         b0 = (1 - cw) / 2 / a0; b1 = (1 - cw) / a0; b2 = b0; a1 = -2 * cw / a0; a2 = (1 - al) / a0;
     }
+    void highpass(double f, double q, double sr) {
+        const double w = 2 * kPi * f / sr, al = std::sin(w) / (2 * q), cw = std::cos(w), a0 = 1 + al;
+        b0 = (1 + cw) / 2 / a0; b1 = -(1 + cw) / a0; b2 = b0; a1 = -2 * cw / a0; a2 = (1 - al) / a0;
+    }
     void peaking(double f, double q, double gainDb, double sr) {   // WebAudio's "peaking"
         const double A = std::pow(10.0, gainDb / 40), w = 2 * kPi * std::min(f, sr * 0.49) / sr, al = std::sin(w) / (2 * q), cw = std::cos(w), a0 = 1 + al / A;
         b0 = (1 + al * A) / a0; b1 = -2 * cw / a0; b2 = (1 - al * A) / a0; a1 = -2 * cw / a0; a2 = (1 - al / A) / a0;
@@ -410,6 +414,7 @@ struct Voice {
     Biquad bp[5], nbp;
     double ng = 0, ngT = 0, ngC = 0;
     double wg = 0, wgT = 0, wgC = 0;   // Whisper
+    Biquad wlp1, wlp2, whp;            // Whisper hiss shaping: two low-passes and a high-pass, so it never screeches
     double breath = 0.012, vibEnd = 42;
     // instrument
     const SoundDef* snd = &kSoundDefs[SndVoice];
@@ -429,6 +434,8 @@ struct Voice {
         const double x = (std::clamp(pan, -1.0f, 1.0f) + 1) / 2;
         gL = std::cos(x * kPi / 2); gR = std::sin(x * kPi / 2);
         nbp.bandpass(2600, 0.8, sr);
+        wlp1.lowpass(2000, std::pow(10.0, 0.5 / 20), sr); wlp2.lowpass(3000, std::pow(10.0, 0.5 / 20), sr);
+        whp.highpass(200, std::pow(10.0, 1.0 / 20), sr);   // WebAudio's default Q of 1 dB
         for (int i = 0; i < 5; ++i) {
             ff[i] = ffT[i] = kVowels[2].f[i]; q[i] = qT[i] = kVowels[2].f[i] / kVowels[2].b[i]; bp[i].bandpass(ff[i], q[i], sr);
             fg[i] = fgT[i] = kFGain[i];
@@ -487,7 +494,7 @@ struct Voice {
         if (!S.inst) { iampT = 0; iampC = coef(0.03); }
         if (!S.whisper) { wgT = 0; wgC = coef(0.03); }
         if (S.inst) playInst(f, was, n);
-        else if (S.whisper) { ampT = 0; ampC = coef(0.02); wgT = 0.5 * (n < 50 ? 1.3 : 1); wgC = coef(0.06); nCoda = 0; sylId = -1; }
+        else if (S.whisper) { ampT = 0; ampC = coef(0.02); wgT = 0.22 * (n < 50 ? 1.3 : 1); wgC = coef(0.06); nCoda = 0; sylId = -1; speechTone(false); }
         else {
             if (S.vib > 0) { vibRamp(was ? vib : 0, {{0.12, was ? 30 : 12}, {0.6, vibEnd}, {0.7, S.vib}}); ampT = sylLevel(n) * S.lvl; }
             if (syl && syl->nu) {
@@ -550,7 +557,7 @@ struct Voice {
     }
     bool idle() const { return !singing && amp < 1e-5 && ng < 1e-6 && wg < 1e-6 && iamp < 1e-6 && evHead >= evs.size(); }
     // how loud the goat is, 0..about 1, for drawing
-    double level() const { return std::max({amp / 0.22, wg / 0.5, iamp / 0.6}); }
+    double level() const { return std::max({amp / 0.22, wg / 0.22, iamp / 0.6}); }
 
     // ---- Words: timed changes, the app's setTargetAtTime calls; u is seconds from now ----
     void schedule(int kind, double u, double v, double tau, double v2 = 0, const Ph* ph = nullptr, bool useE = false) {
@@ -682,7 +689,8 @@ struct Voice {
         const int i0 = (int)pos; const double fr = pos - i0;
         const float* tb = W.tab[src][table];
         const double hiss = noise();
-        const double x = (tb[i0] + (tb[i0 + 1] - tb[i0]) * fr) * amp + hiss * wg;
+        const double wn = (wg > 1e-7 || wgT > 0) ? whp.process(wlp2.process(wlp1.process(hiss))) : 0;
+        const double x = (tb[i0] + (tb[i0 + 1] - tb[i0]) * fr) * amp + wn * wg;
         double y = 0;
         for (int i = 0; i < 5; ++i) y += bp[i].process(x) * fg[i] * 7;
         y += nbp.process(hiss) * ng;

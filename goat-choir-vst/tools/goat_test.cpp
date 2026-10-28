@@ -301,6 +301,17 @@ int main(int argc, char** argv) {
         r = render(p, host, sr, 4, strips({0}, 4), dir.getChildFile("13_sound_" + String(goat::kSoundDefs[(size_t)snd].label).toLowerCase() + ".wav"));
         check(r.peak > 0.03f && r.peak < 1.0f && r.midiOn == r.midiOff, String(goat::kSoundDefs[(size_t)snd].label) + " plays");
     }
+    {
+        // Whisper is shaped hiss: almost nothing above 4 kHz, so it never screeches
+        AudioFormatManager fm; fm.registerBasicFormats();
+        std::unique_ptr<AudioFormatReader> rd(fm.createReaderFor(dir.getChildFile("13_sound_whisper.wav")));
+        AudioBuffer<float> b(1, (int)rd->lengthInSamples); rd->read(&b, 0, b.getNumSamples(), 0, true, false);
+        goat::Biquad hp[3]; for (auto& h : hp) h.highpass(4000, 0.707, rd->sampleRate);   // 36 dB/oct
+        double all = 0, hi = 0;
+        for (int i = 0; i < b.getNumSamples(); ++i) { const double v = b.getSample(0, i), h = hp[2].process(hp[1].process(hp[0].process(v))); all += v * v; hi += h * h; }
+        const double pct = all > 0 ? 100 * hi / all : 100;
+        check(pct < 0.5, "Whisper is soft: " + String(pct, 2) + "% of its energy above 4 kHz");
+    }
     for (int k = 0; k < goat::kMaxGoats; ++k) p.sound[(size_t)k] = goat::SndVoice;
     p.uiBand();
     check(p.sound[0].load() == goat::SndTuba && p.sound[1].load() == goat::SndFlute && p.sound[4].load() == goat::SndTrumpet && p.isBand(), "Band hands out instruments by voice");
